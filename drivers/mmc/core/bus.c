@@ -16,6 +16,7 @@
 #include <linux/err.h>
 #include <linux/slab.h>
 #include <linux/stat.h>
+#include <linux/of.h>
 #include <linux/pm_runtime.h>
 
 #include <linux/mmc/card.h>
@@ -169,6 +170,20 @@ static int mmc_bus_suspend(struct device *dev)
 	if (mmc_bus_needs_resume(host))
 		return 0;
 	ret = host->bus_ops->suspend(host);
+
+	/*
+	 * bus_ops->suspend may fail due to some reason
+	 * In such cases if we return error to PM framework
+	 * from here without calling drv->resume then mmc
+	 * request may get stuck since PM framework will assume
+	 * that mmc bus is not suspended (because of error) and
+	 * it won't call resume again.
+	 *
+	 * So in case of error call drv->resume.
+	 */
+	if (ret && dev->driver && drv->resume)
+		drv->resume(card);
+
 	return ret;
 }
 
@@ -375,13 +390,6 @@ int mmc_add_card(struct mmc_card *card)
 			uhs_bus_speed_mode, type, card->rca);
 	}
 
-#ifdef CONFIG_MACH_LGE
-	/* LGE_CHANGE, 2015-12-14, LGE-MSM8937-BSP-memory@lge.com
-	 * Adding Print for more information.
-	 */
-	printk(KERN_INFO "[LGE][MMC][%-18s( )] mmc_hostname:%s, type:%s\n", __func__, mmc_hostname(card->host), type);
-#endif
-
 #ifdef CONFIG_DEBUG_FS
 	mmc_add_card_debugfs(card);
 #endif
@@ -393,23 +401,15 @@ int mmc_add_card(struct mmc_card *card)
 			pr_err("%s: %s: failed to init wakeup: %d\n",
 			       mmc_hostname(card->host), __func__, ret);
 	}
+
+	card->dev.of_node = mmc_of_find_child_device(card->host, 0);
+
 	ret = device_add(&card->dev);
-#ifdef CONFIG_MACH_LGE
-	/* LGE_CHANGE, 2015-12-14, LGE-MSM8937-BSP-memory@lge.com
-	 * Adding Print for more information.
-	 */
-	if (ret) {
-		printk(KERN_INFO "[LGE][MMC][%-18s( )] device_add & uevent posting fail!, ret:%d \n", __func__, ret);
-		return ret;
-	} else {
-		printk(KERN_INFO "[LGE][MMC][%-18s( )] device_add & uevent posting complete!\n", __func__);
-	}
-#else
 	if (ret)
 		return ret;
-#endif
 
 	mmc_card_set_present(card);
+	device_enable_async_suspend(&card->dev);
 
 	return 0;
 }
@@ -433,6 +433,7 @@ void mmc_remove_card(struct mmc_card *card)
 				mmc_hostname(card->host), card->rca);
 		}
 		device_del(&card->dev);
+		of_node_put(card->dev.of_node);
 	}
 
 	kfree(card->wr_pack_stats.packing_events);

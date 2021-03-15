@@ -2,7 +2,7 @@
  * drivers/mmc/host/sdhci-msm.c - Qualcomm MSM SDHCI Platform
  * driver source file
  *
- * Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -38,7 +38,6 @@
 #include <linux/msm-bus.h>
 #include <linux/pm_runtime.h>
 #include <trace/events/mmc.h>
-#include <soc/qcom/lge/board_lge.h>
 
 #include "sdhci-msm.h"
 #include "sdhci-msm-ice.h"
@@ -224,6 +223,9 @@ static struct sdhci_msm_host *sdhci_slot[2];
 static int disable_slots;
 /* root can write, others read */
 module_param(disable_slots, int, S_IRUGO|S_IWUSR);
+
+static bool nocmdq;
+module_param(nocmdq, bool, S_IRUGO|S_IWUSR);
 
 enum vdd_io_level {
 	/* set vdd_io_data->low_vol_level */
@@ -1064,17 +1066,7 @@ retry:
 			sts_cmd.opcode = MMC_SEND_STATUS;
 			sts_cmd.arg = card->rca << 16;
 			sts_cmd.flags = MMC_RSP_R1 | MMC_CMD_AC;
-		#ifdef CONFIG_MACH_LGE
-			/*
-			 * Wait state response for specific sd card from Republic of South Africa
-			 */
-			if(mmc_card_sd(card))
-				sts_retry = 100;
-			else
-				sts_retry = 5;
-		#else
 			sts_retry = 5;
-		#endif
 			while (sts_retry) {
 				mmc_wait_for_cmd(mmc, &sts_cmd, 0);
 
@@ -1162,7 +1154,7 @@ retry:
 		if (rc)
 			goto kfree;
 		msm_host->saved_tuning_phase = phase;
-		pr_info("%s: %s: finally setting the tuning phase to %d\n",
+		pr_debug("%s: %s: finally setting the tuning phase to %d\n",
 				mmc_hostname(mmc), __func__, phase);
 	} else {
 		if (--tuning_seq_cnt)
@@ -1311,10 +1303,6 @@ static int sdhci_msm_dt_parse_vreg_info(struct device *dev,
 	struct sdhci_msm_reg_data *vreg;
 	struct device_node *np = dev->of_node;
 
-	struct sdhci_host *host = dev_get_drvdata(dev);
-	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
-	struct sdhci_msm_host *msm_host = pltfm_host->priv;
-
 	snprintf(prop_name, MAX_PROP_SIZE, "%s-supply", vreg_name);
 	if (!of_parse_phandle(np, prop_name, 0)) {
 		dev_info(dev, "No vreg data found for %s\n", vreg_name);
@@ -1334,12 +1322,6 @@ static int sdhci_msm_dt_parse_vreg_info(struct device *dev,
 			"qcom,%s-always-on", vreg_name);
 	if (of_get_property(np, prop_name, NULL))
 		vreg->is_always_on = true;
-
-	if(!strcmp(mmc_hostname(msm_host->mmc),"mmc0")) {
-		if (!strcmp(vreg_name,"vdd")) {
-			vreg->is_always_on = lge_get_vdd_always_on();
-		}
-	}
 
 	snprintf(prop_name, MAX_PROP_SIZE,
 			"qcom,%s-lpm-sup", vreg_name);
@@ -1815,7 +1797,9 @@ struct sdhci_msm_pltfm_data *sdhci_msm_populate_pdata(struct device *dev,
 	sdhci_msm_pm_qos_parse(dev, pdata);
 
 	if (of_get_property(np, "qcom,core_3_0v_support", NULL))
-		pdata->core_3_0v_support = true;
+		msm_host->core_3_0v_support = true;
+
+	pdata->sdr104_wa = of_property_read_bool(np, "qcom,sdr104-wa");
 
 	return pdata;
 out:
@@ -2467,7 +2451,9 @@ static irqreturn_t sdhci_msm_pwr_irq(int irq, void *data)
 	 */
 	mb();
 
-	if ((io_level & REQ_IO_HIGH) && (msm_host->caps_0 & CORE_3_0V_SUPPORT))
+	if ((io_level & REQ_IO_HIGH) &&
+			(msm_host->caps_0 & CORE_3_0V_SUPPORT) &&
+			!msm_host->core_3_0v_support)
 		writel_relaxed((readl_relaxed(host->ioaddr + CORE_VENDOR_SPEC) &
 				~CORE_IO_PAD_PWR_SWITCH),
 				host->ioaddr + CORE_VENDOR_SPEC);
@@ -3668,18 +3654,13 @@ void sdhci_msm_pm_qos_cpu_init(struct sdhci_host *host,
 		cpumask_copy(&group->req.cpus_affine,
 			&msm_host->pdata->pm_qos_data.cpu_group_map.mask[i]);
 		/* For initialization phase, set the performance mode latency */
-#ifdef CONFIG_MACH_LGE
-		group->latency = PM_QOS_DEFAULT_VALUE;
-#else
 		group->latency = latency[i].latency[SDHCI_PERFORMANCE_MODE];
-#endif
 		pm_qos_add_request(&group->req, PM_QOS_CPU_DMA_LATENCY,
 			group->latency);
-		pr_info("%s (): voted for group #%d (mask=0x%lx) latency=%d (0x%p)\n",
+		pr_info("%s (): voted for group #%d (mask=0x%lx) latency=%d\n",
 			__func__, i,
 			group->req.cpus_affine.bits[0],
-			group->latency,
-			&latency[i].latency[SDHCI_PERFORMANCE_MODE]);
+			group->latency);
 	}
 	msm_host->pm_qos_prev_cpu = -1;
 	msm_host->pm_qos_group_enable = true;
@@ -3766,6 +3747,19 @@ static void sdhci_msm_init(struct sdhci_host *host)
 				msm_host->pdata->pm_qos_data.latency);
 }
 
+static unsigned int sdhci_msm_get_current_limit(struct sdhci_host *host)
+{
+	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+	struct sdhci_msm_host *msm_host = pltfm_host->priv;
+	struct sdhci_msm_slot_reg_data *curr_slot = msm_host->pdata->vreg_data;
+	u32 max_curr = 0;
+
+	if (curr_slot && curr_slot->vdd_data)
+		max_curr = curr_slot->vdd_data->hpm_uA;
+
+	return max_curr;
+}
+
 static struct sdhci_ops sdhci_msm_ops = {
 	.crypto_engine_cfg = sdhci_msm_ice_cfg,
 	.crypto_cfg_reset = sdhci_msm_ice_cfg_reset,
@@ -3791,6 +3785,7 @@ static struct sdhci_ops sdhci_msm_ops = {
 	.init = sdhci_msm_init,
 	.pre_req = sdhci_msm_pre_req,
 	.post_req = sdhci_msm_post_req,
+	.get_current_limit = sdhci_msm_get_current_limit,
 };
 
 static void sdhci_set_default_hw_caps(struct sdhci_msm_host *msm_host,
@@ -3868,7 +3863,7 @@ static void sdhci_set_default_hw_caps(struct sdhci_msm_host *msm_host,
 		msm_host->use_14lpp_dll = true;
 
 	/* Fake 3.0V support for SDIO devices which requires such voltage */
-	if (msm_host->pdata->core_3_0v_support) {
+	if (msm_host->core_3_0v_support) {
 		caps |= CORE_3_0V_SUPPORT;
 			writel_relaxed(
 			(readl_relaxed(host->ioaddr + SDHCI_CAPABILITIES) |
@@ -3895,6 +3890,11 @@ static void sdhci_msm_cmdq_init(struct sdhci_host *host,
 {
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
 	struct sdhci_msm_host *msm_host = pltfm_host->priv;
+
+	if (nocmdq) {
+		dev_dbg(&pdev->dev, "CMDQ disabled via cmdline\n");
+		return;
+	}
 
 	host->cq_host = cmdq_pltfm_init(pdev);
 	if (IS_ERR(host->cq_host)) {
@@ -4156,8 +4156,6 @@ static int sdhci_msm_probe(struct platform_device *pdev)
 			goto vreg_deinit;
 		}
 		writel_relaxed(readl_relaxed(tlmm_mem) | 0x2, tlmm_mem);
-		dev_dbg(&pdev->dev, "tlmm reg %pa value 0x%08x\n",
-				&tlmm_memres->start, readl_relaxed(tlmm_mem));
 	}
 
 	/*
@@ -4209,8 +4207,6 @@ static int sdhci_msm_probe(struct platform_device *pdev)
 	 * 1. Card detection is handled using separate GPIO.
 	 * 2. Bus power control is handled by interacting with PMIC.
 	 */
-	if (msm_host->pdata->nonremovable)
-		host->quirks |= SDHCI_QUIRK_BROKEN_TIMEOUT_VAL;
 	host->quirks |= SDHCI_QUIRK_BROKEN_CARD_DETECTION;
 	host->quirks |= SDHCI_QUIRK_SINGLE_POWER_WRITE;
 	host->quirks |= SDHCI_QUIRK_CAP_CLOCK_BASE_BROKEN;
@@ -4271,13 +4267,12 @@ static int sdhci_msm_probe(struct platform_device *pdev)
 	/* Set host capabilities */
 	msm_host->mmc->caps |= msm_host->pdata->mmc_bus_width;
 	msm_host->mmc->caps |= msm_host->pdata->caps;
-
 	msm_host->mmc->caps |= MMC_CAP_AGGRESSIVE_PM;
 	msm_host->mmc->caps |= MMC_CAP_WAIT_WHILE_BUSY;
 	msm_host->mmc->caps2 |= msm_host->pdata->caps2;
 	msm_host->mmc->caps2 |= MMC_CAP2_BOOTPART_NOACC;
 	msm_host->mmc->caps2 |= MMC_CAP2_HS400_POST_TUNING;
-//	msm_host->mmc->caps2 |= MMC_CAP2_CLK_SCALE;
+	msm_host->mmc->caps2 |= MMC_CAP2_CLK_SCALE;
 	msm_host->mmc->caps2 |= MMC_CAP2_SANITIZE;
 	msm_host->mmc->caps2 |= MMC_CAP2_MAX_DISCARD_SIZE;
 	msm_host->mmc->caps2 |= MMC_CAP2_SLEEP_AWAKE;
@@ -4289,6 +4284,7 @@ static int sdhci_msm_probe(struct platform_device *pdev)
 	if (msm_host->pdata->nonhotplug)
 		msm_host->mmc->caps2 |= MMC_CAP2_NONHOTPLUG;
 
+	msm_host->mmc->sdr104_wa = msm_host->pdata->sdr104_wa;
 
 	/* Initialize ICE if present */
 	if (msm_host->ice.pdev) {
@@ -4330,7 +4326,7 @@ static int sdhci_msm_probe(struct platform_device *pdev)
 	}
 
 	if ((sdhci_readl(host, SDHCI_CAPABILITIES) & SDHCI_CAN_64BIT) &&
-			(dma_supported(mmc_dev(host->mmc), DMA_BIT_MASK(64)))) {
+		(dma_supported(mmc_dev(host->mmc), DMA_BIT_MASK(64)))) {
 		host->dma_mask = DMA_BIT_MASK(64);
 		mmc_dev(host->mmc)->dma_mask = &host->dma_mask;
 		mmc_dev(host->mmc)->coherent_dma_mask  = host->dma_mask;
@@ -4409,7 +4405,7 @@ static int sdhci_msm_probe(struct platform_device *pdev)
 	ret = device_create_file(&pdev->dev, &msm_host->auto_cmd21_attr);
 	if (ret) {
 		pr_err("%s: %s: failed creating auto-cmd21 attr: %d\n",
-				mmc_hostname(host->mmc), __func__, ret);
+		       mmc_hostname(host->mmc), __func__, ret);
 		device_remove_file(&pdev->dev, &msm_host->auto_cmd21_attr);
 	}
 	/* Successful initialization */
@@ -4611,21 +4607,24 @@ static int sdhci_msm_suspend(struct device *dev)
 	struct sdhci_host *host = dev_get_drvdata(dev);
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
 	struct sdhci_msm_host *msm_host = pltfm_host->priv;
+	struct mmc_host *mmc = host->mmc;
 	int ret = 0;
 	int sdio_cfg = 0;
 	ktime_t start = ktime_get();
 
 	if (gpio_is_valid(msm_host->pdata->status_gpio) &&
-			(msm_host->mmc->slot.cd_irq >= 0))
-		disable_irq(msm_host->mmc->slot.cd_irq);
+		(msm_host->mmc->slot.cd_irq >= 0))
+			disable_irq(msm_host->mmc->slot.cd_irq);
 
 	if (pm_runtime_suspended(dev)) {
 		pr_debug("%s: %s: already runtime suspended\n",
-				mmc_hostname(host->mmc), __func__);
+		mmc_hostname(host->mmc), __func__);
 		goto out;
 	}
 	ret = sdhci_msm_runtime_suspend(dev);
 out:
+	/* cancel any clock gating work scheduled by mmc_host_clk_release() */
+	cancel_delayed_work_sync(&mmc->clk_gate_work);
 	sdhci_msm_disable_controller_clock(host);
 	if (host->mmc->card && mmc_card_sdio(host->mmc->card)) {
 		sdio_cfg = sdhci_msm_cfg_sdio_wakeup(host, true);
@@ -4648,12 +4647,12 @@ static int sdhci_msm_resume(struct device *dev)
 	ktime_t start = ktime_get();
 
 	if (gpio_is_valid(msm_host->pdata->status_gpio) &&
-			(msm_host->mmc->slot.cd_irq >= 0))
-		enable_irq(msm_host->mmc->slot.cd_irq);
+		(msm_host->mmc->slot.cd_irq >= 0))
+			enable_irq(msm_host->mmc->slot.cd_irq);
 
 	if (pm_runtime_suspended(dev)) {
 		pr_debug("%s: %s: runtime suspended, defer system resume\n",
-				mmc_hostname(host->mmc), __func__);
+		mmc_hostname(host->mmc), __func__);
 		goto out;
 	}
 
@@ -4695,7 +4694,7 @@ static int sdhci_msm_suspend_noirq(struct device *dev)
 }
 
 static const struct dev_pm_ops sdhci_msm_pmops = {
-	SET_SYSTEM_SLEEP_PM_OPS(sdhci_msm_suspend, sdhci_msm_resume)
+	SET_LATE_SYSTEM_SLEEP_PM_OPS(sdhci_msm_suspend, sdhci_msm_resume)
 	SET_RUNTIME_PM_OPS(sdhci_msm_runtime_suspend, sdhci_msm_runtime_resume,
 			   NULL)
 	.suspend_noirq = sdhci_msm_suspend_noirq,
@@ -4718,6 +4717,7 @@ static struct platform_driver sdhci_msm_driver = {
 	.driver		= {
 		.name	= "sdhci_msm",
 		.owner	= THIS_MODULE,
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 		.of_match_table = sdhci_msm_dt_match,
 		.pm	= SDHCI_MSM_PMOPS,
 	},

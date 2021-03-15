@@ -89,7 +89,6 @@
 /* response mode error mask */
 #define CQRMEM		0x50
 #define CQ_EXCEPTION	(1 << 6)
-#define WP_EXCEPTION	(1 << 26)
 
 /* task error info */
 #define CQTERRI		0x54
@@ -104,6 +103,8 @@
 
 #define GET_CMD_ERR_TAG(__r__) ((__r__ & CQ_RMETI) >> 8)
 #define GET_DAT_ERR_TAG(__r__) ((__r__ & CQ_DTETI) >> 24)
+#define GET_CMD_ERR_CMD(__r__) (__r__ & 0x3F)
+#define GET_DAT_ERR_CMD(__r__) ((__r__ & 0x3F0000) >> 16)
 
 /* command response index */
 #define CQCRI		0x58

@@ -53,9 +53,6 @@
 #include <linux/pm_runtime.h>
 #include <asm/uaccess.h>
 #include <asm/unaligned.h>
-#ifdef CONFIG_USB_HOST_NOTIFY
-#include <linux/kthread.h>
-#endif
 
 #include <scsi/scsi.h>
 #include <scsi/scsi_cmnd.h>
@@ -207,6 +204,12 @@ cache_type_store(struct device *dev, struct device_attribute *attr,
 	buffer_data[2] &= ~0x05;
 	buffer_data[2] |= wce << 2 | rcd;
 	sp = buffer_data[0] & 0x80 ? 1 : 0;
+
+	/*
+	 * Ensure WP, DPOFUA, and RESERVED fields are cleared in
+	 * received mode parameter buffer before doing MODE SELECT.
+	 */
+	data.device_specific = 0;
 
 	if (scsi_mode_select(sdp, 1, sp, 8, buffer_data, len, SD_TIMEOUT,
 			     SD_MAX_RETRIES, &data, &sshdr)) {
@@ -1305,18 +1308,19 @@ static int sd_getgeo(struct block_device *bdev, struct hd_geometry *geo)
 	struct scsi_disk *sdkp = scsi_disk(bdev->bd_disk);
 	struct scsi_device *sdp = sdkp->device;
 	struct Scsi_Host *host = sdp->host;
+	sector_t capacity = logical_to_sectors(sdp, sdkp->capacity);
 	int diskinfo[4];
 
 	/* default to most commonly used values */
-        diskinfo[0] = 0x40;	/* 1 << 6 */
-       	diskinfo[1] = 0x20;	/* 1 << 5 */
-       	diskinfo[2] = sdkp->capacity >> 11;
-	
+	diskinfo[0] = 0x40;	/* 1 << 6 */
+	diskinfo[1] = 0x20;	/* 1 << 5 */
+	diskinfo[2] = capacity >> 11;
+
 	/* override with calculated, extended default, or driver values */
 	if (host->hostt->bios_param)
-		host->hostt->bios_param(sdp, bdev, sdkp->capacity, diskinfo);
+		host->hostt->bios_param(sdp, bdev, capacity, diskinfo);
 	else
-		scsicam_bios_param(bdev, sdkp->capacity, diskinfo);
+		scsicam_bios_param(bdev, capacity, diskinfo);
 
 	geo->heads = diskinfo[0];
 	geo->sectors = diskinfo[1];
@@ -1416,42 +1420,6 @@ static int media_not_present(struct scsi_disk *sdkp,
 	return 0;
 }
 
-#if defined(CONFIG_MACH_LGE) && defined(CONFIG_USB_HOST_NOTIFY)
-static unsigned int sd_check_events(struct gendisk *disk, unsigned int clearing)
-{
-	struct scsi_disk *sdkp = scsi_disk(disk);
-	struct scsi_device *sdp = sdkp->device;
-	struct scsi_sense_hdr *sshdr = NULL;
-	int retval;
-	printk("alex enter sd_check_events\n");
-	SCSI_LOG_HLQUEUE(3, sd_printk(KERN_INFO, sdkp, "sd_check_events\n"));
-	if (!scsi_device_online(sdp)) {
-		set_media_not_present(sdkp);
-		goto out;
-	}
-	retval = -ENODEV;
-	if (scsi_block_when_processing_errors(sdp)) {
-		sshdr  = kzalloc(sizeof(*sshdr), GFP_KERNEL);
-		retval = scsi_test_unit_ready(sdp, SD_TIMEOUT, SD_MAX_RETRIES,
-					      sshdr);
-	}
-	if (host_byte(retval)) {
-		set_media_not_present(sdkp);
-		goto out;
-	}
-	if (media_not_present(sdkp, sshdr))
-		goto out;
-
-	if (!sdkp->media_present)
-		sdp->changed = 1;
-	sdkp->media_present = 1;
-out:
-	kfree(sshdr);
-	retval = sdp->changed ? DISK_EVENT_MEDIA_CHANGE : 0;
-	sdp->changed = 0;
-	return retval;
-}
-#endif
 static int sd_sync_cache(struct scsi_disk *sdkp)
 {
 	int retries, res;
@@ -1564,9 +1532,6 @@ static const struct block_device_operations sd_fops = {
 	.getgeo			= sd_getgeo,
 #ifdef CONFIG_COMPAT
 	.compat_ioctl		= sd_compat_ioctl,
-#endif
-#ifndef CONFIG_MACH_LGE
-	.check_events           = sd_check_events,
 #endif
 	.revalidate_disk	= sd_revalidate_disk,
 	.unlock_native_capacity	= sd_unlock_native_capacity,
@@ -1836,6 +1801,8 @@ sd_spinup_disk(struct scsi_disk *sdkp)
 				break;	/* standby */
 			if (sshdr.asc == 4 && sshdr.ascq == 0xc)
 				break;	/* unavailable */
+			if (sshdr.asc == 4 && sshdr.ascq == 0x1b)
+				break;	/* sanitize in progress */
 			/*
 			 * Issue command to spin up drive when not ready
 			 */
@@ -1967,6 +1934,22 @@ static void read_capacity_error(struct scsi_disk *sdkp, struct scsi_device *sdp,
 
 #define READ_CAPACITY_RETRIES_ON_RESET	10
 
+/*
+ * Ensure that we don't overflow sector_t when CONFIG_LBDAF is not set
+ * and the reported logical block size is bigger than 512 bytes. Note
+ * that last_sector is a u64 and therefore logical_to_sectors() is not
+ * applicable.
+ */
+static bool sd_addressable_capacity(u64 lba, unsigned int sector_size)
+{
+	u64 last_sector = (lba + 1ULL) << (ilog2(sector_size) - 9);
+
+	if (sizeof(sector_t) == 4 && last_sector > U32_MAX)
+		return false;
+
+	return true;
+}
+
 static int read_capacity_16(struct scsi_disk *sdkp, struct scsi_device *sdp,
 						unsigned char *buffer)
 {
@@ -2032,7 +2015,7 @@ static int read_capacity_16(struct scsi_disk *sdkp, struct scsi_device *sdp,
 		return -ENODEV;
 	}
 
-	if ((sizeof(sdkp->capacity) == 4) && (lba >= 0xffffffffULL)) {
+	if (!sd_addressable_capacity(lba, sector_size)) {
 		sd_printk(KERN_ERR, sdkp, "Too big for this kernel. Use a "
 			"kernel compiled with support for large block "
 			"devices.\n");
@@ -2118,7 +2101,7 @@ static int read_capacity_10(struct scsi_disk *sdkp, struct scsi_device *sdp,
 		return sector_size;
 	}
 
-	if ((sizeof(sdkp->capacity) == 4) && (lba == 0xffffffff)) {
+	if (!sd_addressable_capacity(lba, sector_size)) {
 		sd_printk(KERN_ERR, sdkp, "Too big for this kernel. Use a "
 			"kernel compiled with support for large block "
 			"devices.\n");
@@ -2256,14 +2239,6 @@ got_data:
 		sdkp->max_xfer_blocks = SD_MAX_XFER_BLOCKS;
 	} else
 		sdkp->max_xfer_blocks = SD_DEF_XFER_BLOCKS;
-
-	/* Rescale capacity to 512-byte units */
-	if (sector_size == 4096)
-		sdkp->capacity <<= 3;
-	else if (sector_size == 2048)
-		sdkp->capacity <<= 2;
-	else if (sector_size == 1024)
-		sdkp->capacity <<= 1;
 
 	blk_queue_physical_block_size(sdp->request_queue,
 				      sdkp->physical_block_size);
@@ -2754,9 +2729,6 @@ static int sd_revalidate_disk(struct gendisk *disk)
 	 * react badly if we do.
 	 */
 	if (sdkp->media_present) {
-#ifdef CONFIG_USB_HOST_NOTIFY
-		disk->media_present = 1;
-#endif
 		sd_read_capacity(sdkp, buffer);
 
 		if (sd_try_extended_inquiry(sdp)) {
@@ -2785,7 +2757,7 @@ static int sd_revalidate_disk(struct gendisk *disk)
 	sdkp->disk->queue->limits.max_sectors =
 		min_not_zero(queue_max_hw_sectors(sdkp->disk->queue), max_xfer);
 
-	set_capacity(disk, sdkp->capacity);
+	set_capacity(disk, logical_to_sectors(sdp, sdkp->capacity));
 	sd_config_write_same(sdkp);
 	kfree(buffer);
 
@@ -2859,91 +2831,6 @@ static int sd_format_disk_name(char *prefix, int index, char *buf, int buflen)
 	return 0;
 }
 
-#ifdef CONFIG_USB_HOST_NOTIFY
-static void sd_media_state_emit(struct scsi_disk *sdkp)
-{
-	struct gendisk *gd = sdkp->disk;
-	struct device *ddev = disk_to_dev(gd);
-	int idx = 0;
-	char *envp[3];
-	envp[idx++] = "DISC_MEDIA_CHANGE=1";
-	envp[idx++] = NULL;
-	kobject_uevent_env(&ddev->kobj, KOBJ_CHANGE, envp);
-}
-static void sd_scanpartition_async(void *data, async_cookie_t cookie)
-{
-	struct scsi_disk *sdkp = data;
-	struct block_device *bdev;
-	struct gendisk *gd = sdkp->disk;
-	struct device *ddev = disk_to_dev(gd);
-	struct disk_part_iter piter;
-	struct hd_struct *part;
-	int err;
-	dev_set_uevent_suppress(ddev, 1);
-	if (!disk_part_scan_enabled(gd)) {
-		sd_printk(KERN_NOTICE, sdkp, "No disc partitions\n");
-		goto exit;
-	}
-	bdev = bdget_disk(gd, 0);
-	if (!bdev) {
-		sd_printk(KERN_NOTICE, sdkp, "bdget_disk, bdev is NULL\n");
-		goto exit;
-	}
-	bdev->bd_invalidated = 1;
-	err = blkdev_get(bdev, FMODE_READ, NULL);
-	if (err < 0) {
-		sd_printk(KERN_NOTICE, sdkp, "no media, delete partition\n");
-		disk_part_iter_init(&piter, gd, DISK_PITER_INCL_EMPTY);
-		while ((part = disk_part_iter_next(&piter)))
-			delete_partition(gd, part->partno);
-		disk_part_iter_exit(&piter);
-		check_disk_size_change(gd, bdev);
-		bdev->bd_invalidated = 0;
-		goto exit;
-	}
-	blkdev_put(bdev, FMODE_READ);
-exit:
-	dev_set_uevent_suppress(ddev, 0);
-	sd_media_state_emit(sdkp);
-	disk_part_iter_init(&piter, gd, 0);
-	while ((part = disk_part_iter_next(&piter)))
-		kobject_uevent(&part_to_dev(part)->kobj, KOBJ_ADD);
-	disk_part_iter_exit(&piter);
-	sdkp->async_end = 1;
-	wake_up_interruptible(&sdkp->delay_wait);
-}
-static int sd_media_scan_thread(void *__sdkp)
-{
-	struct scsi_disk *sdkp = __sdkp;
-	int ret;
-	sdkp->async_end = 1;
-	sdkp->device->changed = 0;
-	while (!kthread_should_stop()) {
-		wait_event_interruptible_timeout(sdkp->delay_wait,
-			(sdkp->thread_remove && sdkp->async_end), 3*HZ);
-		if (sdkp->thread_remove && sdkp->async_end)
-			break;
-#ifdef CONFIG_MACH_LGE
-		ret = sd_check_events(sdkp->disk, 0);
-#else
-		ret = 0;
-#endif
-		if (sdkp->prv_media_present
-				!= sdkp->media_present) {
-			sd_printk(KERN_NOTICE, sdkp,
-				"sd_check_ret=%d prv_media=%d media=%d\n",
-					ret, sdkp->prv_media_present
-							, sdkp->media_present);
-			sdkp->disk->media_present = 0;
-			sdkp->async_end = 0;
-			async_schedule(sd_scanpartition_async, sdkp);
-			sdkp->prv_media_present = sdkp->media_present;
-		}
-	}
-	sd_printk(KERN_NOTICE, sdkp, "sd_media_scan_thread exit\n");
-	complete_and_exit(&sdkp->scanning_done, 0);
-}
-#endif
 /*
  * The asynchronous part of sd_probe
  */
@@ -2992,16 +2879,8 @@ static void sd_probe_async(void *data, async_cookie_t cookie)
 	blk_pm_runtime_init(sdp->request_queue, dev);
 	if (sdp->autosuspend_delay >= 0)
 		pm_runtime_set_autosuspend_delay(dev, sdp->autosuspend_delay);
-#ifdef CONFIG_USB_HOST_NOTIFY
-	if (sdp->host->by_usb)
-		gd->interfaces = GENHD_IF_USB;
 
-	msleep(500);
-#endif
 	add_disk(gd);
-#ifdef CONFIG_USB_HOST_NOTIFY
-	sdkp->prv_media_present = sdkp->media_present;
-#endif
 	if (sdkp->capacity)
 		sd_dif_config_host(sdkp);
 
@@ -3009,12 +2888,6 @@ static void sd_probe_async(void *data, async_cookie_t cookie)
 
 	scsi_autopm_put_device(sdp);
 	put_device(&sdkp->dev);
-#ifdef CONFIG_USB_HOST_NOTIFY
-	if (sdp->host->by_usb) {
-		if (!IS_ERR(sdkp->th))
-			wake_up_process(sdkp->th);
-	}
-#endif
 }
 
 /**
@@ -3105,19 +2978,6 @@ static int sd_probe(struct device *dev)
 
 	get_device(dev);
 	dev_set_drvdata(dev, sdkp);
-#ifdef CONFIG_USB_HOST_NOTIFY
-	if (sdp->host->by_usb) {
-		init_waitqueue_head(&sdkp->delay_wait);
-		init_completion(&sdkp->scanning_done);
-		sdkp->thread_remove = 0;
-		sdkp->th = kthread_create(sd_media_scan_thread,
-				sdkp, "sd-media-scan");
-		if (IS_ERR(sdkp->th)) {
-			pr_err("Unable to start the device-scanning thread\n");
-			complete(&sdkp->scanning_done);
-		}
-	}
-#endif
 
 	get_device(&sdkp->dev);	/* prevent release before async_schedule */
 	async_schedule_domain(sd_probe_async, sdkp, &scsi_sd_probe_domain);
@@ -3156,15 +3016,6 @@ static int sd_remove(struct device *dev)
 	sdkp = dev_get_drvdata(dev);
 	devt = disk_devt(sdkp->disk);
 	scsi_autopm_get_device(sdkp->device);
-#ifdef CONFIG_USB_HOST_NOTIFY
-	sdkp->disk->media_present = 0;
-	if (sdkp->device->host->by_usb) {
-		sdkp->thread_remove = 1;
-		wake_up_interruptible(&sdkp->delay_wait);
-		wait_for_completion(&sdkp->scanning_done);
-		sd_printk(KERN_NOTICE, sdkp, "scan thread kill success\n");
-	}
-#endif
 
 	async_synchronize_full_domain(&scsi_sd_pm_domain);
 	async_synchronize_full_domain(&scsi_sd_probe_domain);

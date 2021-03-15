@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -170,133 +170,6 @@ struct mdp_csc_cfg mdp_csc_8bit_convert[MDSS_MDP_MAX_CSC] = {
 	},
 };
 
-#if defined(CONFIG_LGE_BROADCAST_TDMB) || defined(CONFIG_LGE_BROADCAST_ISDBT_JAPAN) || defined(CONFIG_LGE_BROADCAST_SBTVD_LATIN)
-struct mdp_csc_cfg dmb_csc_convert = {
-#if defined(CONFIG_MACH_MSM8952_B5_JP_KDI)
-	0,
-	{
-		0x0254, 0x0000, 0x0331,    // 298
-		0x0244, 0xff37, 0xfe60,    // 290
-		0x0268, 0x0409, 0x0000,    // 308
-	},
-	{ 0xfff0, 0xff80, 0xff80,},
-	{ 0x0, 0x0, 0x0,},
-	{ 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
-	{ 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
-#elif defined(CONFIG_MACH_MSM8937_L5_DCM_JP)
-	0,
-	{
-		0x0254, 0x0000, 0x0331,    // 298
-		0x0230, 0xff37, 0xfe60,    // 280
-		0x026e, 0x0409, 0x0000,    // 311
-	},
-	{ 0xfff0, 0xff80, 0xff80,},
-	{ 0x0, 0x0, 0x0,},
-	{ 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
-	{ 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
-#elif defined(CONFIG_MACH_MSM8940_L6_DCM_JP)
-	0,
-	{
-        0x0218, 0x0000, 0x0331,    // 268
-        0x0238, 0xff38, 0xfe61,    // 284
-        0x026c, 0x0409, 0x0000,    // 310
-	},
-	{ 0xfff0, 0xff80, 0xff80,},
-	{ 0x0, 0x0, 0x0,},
-	{ 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
-	{ 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
-#elif defined(CONFIG_MACH_MSM8940_MH_SKT_KR) || defined(CONFIG_MACH_MSM8940_MH_KT_KR) || defined(CONFIG_MACH_MSM8940_MH_LGU_KR)
-	0,
-	{
-		0x0244, 0x0000, 0x0331,    // 290
-		0x0244, 0xff37, 0xfe60,    // 290
-		0x0274, 0x0409, 0x0000,    // 314
-	},
-	{ 0xfff0, 0xff80, 0xff80,},
-	{ 0x0, 0x0, 0x0,},
-	{ 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
-	{ 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
-#elif defined(CONFIG_MACH_MSM8940_MH_GLOBAL_COM) || defined(CONFIG_MACH_MSM8940_MH_GLOBAL_CA)
-	0,
-	{
-		0x0244, 0x0000, 0x0331,    // 290
-		0x0244, 0xff37, 0xfe60,    // 290
-		0x0274, 0x0409, 0x0000,    // 314
-	},
-	{ 0xfff0, 0xff80, 0xff80,},
-	{ 0x0, 0x0, 0x0,},
-	{ 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
-	{ 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
-#elif defined(CONFIG_MACH_MSM8992_P1_KDDI_JP)
-	0,
-	{
-		0x0252, 0x0000, 0x0331,    // 297
-		0x0234, 0xff37, 0xfe60,    // 282
-		0x0272, 0x0409, 0x0000,    // 313
-	},
-	{ 0xfff0, 0xff80, 0xff80,},
-	{ 0x0, 0x0, 0x0,},
-	{ 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
-	{ 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
-#elif defined(CONFIG_MACH_MSM8974_G3_KDDI)
-    0,
-    {
-        0x023e, 0x0000, 0x0331,    // 287
-        0x0244, 0xff38, 0xfe61,    // 290
-        0x026c, 0x0409, 0x0000,    // 310
-    },
-    { 0xfff0, 0xff80, 0xff80,},
-    { 0x0, 0x0, 0x0,},
-    { 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
-    { 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
-#elif defined(CONFIG_MACH_MSM8974_DZNY_DCM)
-    0,
-    {
-        0x0218, 0x0000, 0x0331,    // 268
-        0x0238, 0xff38, 0xfe61,    // 284
-        0x026c, 0x0409, 0x0000,    // 310
-    },
-    { 0xfff0, 0xff80, 0xff80,},
-    { 0x0, 0x0, 0x0,},
-    { 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
-    { 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
-#elif defined(CONFIG_MACH_MSM8917_LV3_SKT_KR) || defined(CONFIG_MACH_MSM8917_LV3_KT_KR) || defined(CONFIG_MACH_MSM8917_LV3_LGU_KR)
-    0,
-    {
-        0x0270, 0x0000, 0x0331,    // 312
-        0x0268, 0xff38, 0xfe61,    // 308
-        0x0268, 0x0409, 0x0000,    // 308
-    },
-    { 0xfff0, 0xff80, 0xff80,},
-    { 0x0, 0x0, 0x0,},
-    { 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
-    { 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
-#elif defined(CONFIG_MACH_MSM8917_CV3_SKT_KR) || defined(CONFIG_MACH_MSM8917_CV3_KT_KR) || defined(CONFIG_MACH_MSM8917_CV3_LGU_KR)
-    0,
-    {
-        0x0248, 0x0000, 0x0331,    // 292
-        0x0230, 0xff38, 0xfe61,    // 280
-        0x0266, 0x0409, 0x0000,    // 307
-    },
-    { 0xfff0, 0xff80, 0xff80,},
-    { 0x0, 0x0, 0x0,},
-    { 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
-    { 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
-#else
-	0,
-	{
-		0x0254, 0x0000, 0x0331,
-		0x0254, 0xff37, 0xfe60,
-		0x0254, 0x0409, 0x0000,
-	},
-	{ 0xfff0, 0xff80, 0xff80,},
-	{ 0x0, 0x0, 0x0,},
-	{ 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
-	{ 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
-#endif
-};
-#endif /* LGE_BROADCAST */
-
 struct mdp_csc_cfg mdp_csc_10bit_convert[MDSS_MDP_MAX_CSC] = {
 	[MDSS_MDP_CSC_YUV2RGB_601L] = {
 		0,
@@ -305,7 +178,7 @@ struct mdp_csc_cfg mdp_csc_10bit_convert[MDSS_MDP_MAX_CSC] = {
 			0x0254, 0xff37, 0xfe60,
 			0x0254, 0x0409, 0x0000,
 		},
-		{ 0xffc0, 0xffe0, 0xffe0,},
+		{ 0xffc0, 0xfe00, 0xfe00,},
 		{ 0x0, 0x0, 0x0,},
 		{ 0x40, 0x3ac, 0x40, 0x3c0, 0x40, 0x3c0,},
 		{ 0x0, 0x3ff, 0x0, 0x3ff, 0x0, 0x3ff,},
@@ -317,7 +190,7 @@ struct mdp_csc_cfg mdp_csc_10bit_convert[MDSS_MDP_MAX_CSC] = {
 			0x0200, 0xff50, 0xfe92,
 			0x0200, 0x038b, 0x0000,
 		},
-		{ 0x0000, 0xffe0, 0xffe0,},
+		{ 0x0000, 0xfe00, 0xfe00,},
 		{ 0x0, 0x0, 0x0,},
 		{ 0x0, 0x3ff, 0x0, 0x3ff, 0x0, 0x3ff,},
 		{ 0x0, 0x3ff, 0x0, 0x3ff, 0x0, 0x3ff,},
@@ -627,16 +500,6 @@ static struct mdp_pp_feature_ops *pp_ops;
 
 static DEFINE_MUTEX(mdss_pp_mutex);
 static struct mdss_pp_res_type *mdss_pp_res;
-
-#if defined(CONFIG_LGE_BROADCAST_TDMB) || defined(CONFIG_LGE_BROADCAST_ISDBT_JAPAN) || defined(CONFIG_LGE_BROADCAST_SBTVD_LATIN)
-static int dmb_status; // on - 1, off - 0
-
-int pp_set_dmb_status(int flag) {
-    dmb_status = flag;
-
-    return 0;
-}
-#endif /* LGE_BROADCAST */
 
 static u32 pp_hist_read(char __iomem *v_addr,
 				struct pp_hist_col_info *hist_info);
@@ -1276,15 +1139,8 @@ static int pp_vig_pipe_setup(struct mdss_mdp_pipe *pipe, u32 *op)
 		 * is a previously configured pipe need to re-configure
 		 * CSC matrix
 		 */
-#if !defined(CONFIG_LGE_BROADCAST_TDMB) && !defined(CONFIG_LGE_BROADCAST_ISDBT_JAPAN) && !defined(CONFIG_LGE_BROADCAST_SBTVD_LATIN)
-        mdss_mdp_csc_setup(MDSS_MDP_BLOCK_SSPP, pipe->num, pp_vig_csc_pipe_val(pipe));
-#else
-        if(dmb_status == 1) {
-            mdss_mdp_csc_setup_data(MDSS_MDP_BLOCK_SSPP, pipe->num, &dmb_csc_convert);
-        } else {
-            mdss_mdp_csc_setup(MDSS_MDP_BLOCK_SSPP, pipe->num, pp_vig_csc_pipe_val(pipe));
-        }
-#endif /* LGE_BROADCAST */
+		mdss_mdp_csc_setup(MDSS_MDP_BLOCK_SSPP, pipe->num,
+			   pp_vig_csc_pipe_val(pipe));
 	}
 
 	/* Update CSC state only if tuning mode is enable */
@@ -1720,11 +1576,16 @@ int mdss_mdp_scaler_lut_cfg(struct mdp_scale_data_v2 *scaler,
 	};
 
 	mdata = mdss_mdp_get_mdata();
+
+	mutex_lock(&mdata->scaler_off->scaler_lock);
+
 	lut_tbl = &mdata->scaler_off->lut_tbl;
 	if ((!lut_tbl) || (!lut_tbl->valid)) {
+		mutex_unlock(&mdata->scaler_off->scaler_lock);
 		pr_err("%s:Invalid QSEED3 LUT TABLE\n", __func__);
 		return -EINVAL;
 	}
+
 	if ((scaler->lut_flag & SCALER_LUT_DIR_WR) ||
 		(scaler->lut_flag & SCALER_LUT_Y_CIR_WR) ||
 		(scaler->lut_flag & SCALER_LUT_UV_CIR_WR) ||
@@ -1774,6 +1635,8 @@ int mdss_mdp_scaler_lut_cfg(struct mdp_scale_data_v2 *scaler,
 	if (scaler->lut_flag & SCALER_LUT_SWAP)
 		writel_relaxed(BIT(0), MDSS_MDP_REG_SCALER_COEF_LUT_CTRL +
 				offset);
+
+	mutex_unlock(&mdata->scaler_off->scaler_lock);
 
 	return 0;
 }

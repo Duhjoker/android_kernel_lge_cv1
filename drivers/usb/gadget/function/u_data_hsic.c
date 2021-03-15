@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2014, Linux Foundation. All rights reserved.
+/* Copyright (c) 2011-2014,2016-2017 Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -539,9 +539,6 @@ static void ghsic_data_connect_w(struct work_struct *w)
 		container_of(w, struct gdata_port, connect_w);
 	int			ret;
 
-	printk("%s: connected=%d, CH_READY=%d, port=%pK\n",
-		__func__, atomic_read(&port->connected),
-		test_bit(CH_READY, &port->bridge_sts), port);
 	if (!port || !atomic_read(&port->connected) ||
 		!test_bit(CH_READY, &port->bridge_sts))
 		return;
@@ -743,9 +740,6 @@ static int ghsic_data_port_alloc(unsigned port_num, enum gadget_type gtype)
 	pdrv->driver.owner = THIS_MODULE;
 
 	platform_driver_register(pdrv);
-
-	pr_debug("%s: port:%pK portno:%d\n", __func__, port, port_num);
-
 	return 0;
 }
 

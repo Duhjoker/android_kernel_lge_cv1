@@ -763,9 +763,6 @@ static int create_urbs(struct gspca_dev *gspca_dev,
 	struct urb *urb;
 	int n, nurbs, i, psize, npkt, bsize;
 
-	if (!ep)
-		return -ENOMEM;
-
 	/* calculate the packet size and the number of packets */
 	psize = le16_to_cpu(ep->desc.wMaxPacketSize);
 

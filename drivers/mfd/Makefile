@@ -175,18 +175,17 @@ obj-$(CONFIG_MFD_STW481X)	+= stw481x.o
 obj-$(CONFIG_MFD_IPAQ_MICRO)	+= ipaq-micro.o
 obj-$(CONFIG_MFD_MENF21BMC)	+= menf21bmc.o
 obj-$(CONFIG_MFD_HI6421_PMIC)	+= hi6421-pmic-core.o
-obj-$(CONFIG_LGE_DISPLAY_DW8768_DSV)	+= dw8768.o
-obj-$(CONFIG_LGE_DISPLAY_SM5107_DSV)    += sm5107.o
-obj-$(CONFIG_LGE_DISPLAY_EXTERNAL_DSV)	+= external_dsv.o
 
 intel-soc-pmic-objs		:= intel_soc_pmic_core.o intel_soc_pmic_crc.o
 obj-$(CONFIG_INTEL_SOC_PMIC)	+= intel-soc-pmic.o
 obj-$(CONFIG_WCD9306_CODEC)	+= wcd9xxx-core.o wcd9xxx-irq.o wcd9xxx-slimslave.o\
-						wcd9xxx-core-resource.o wcd9306-regmap.o
+					wcd9xxx-core-resource.o wcd9306-regmap.o\
+					wcd-gpio-ctrl.o
 obj-$(CONFIG_WCD9320_CODEC)	+= wcd9xxx-core.o wcd9xxx-irq.o wcd9xxx-slimslave.o\
 						wcd9xxx-core-resource.o
 obj-$(CONFIG_WCD9330_CODEC)	+= wcd9xxx-core.o wcd9xxx-irq.o wcd9xxx-slimslave.o\
-						wcd9xxx-core-resource.o wcd9330-regmap.o
+					wcd9xxx-core-resource.o wcd9330-regmap.o\
+					wcd-gpio-ctrl.o
 obj-$(CONFIG_WCD9335_CODEC)	+= wcd9xxx-core.o wcd9xxx-irq.o wcd9xxx-slimslave.o\
 					wcd9xxx-core-resource.o wcd9335-regmap.o\
 					wcd9335-tables.o wcd-gpio-ctrl.o

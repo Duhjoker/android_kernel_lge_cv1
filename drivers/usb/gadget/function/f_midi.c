@@ -92,12 +92,7 @@ struct f_midi {
 	unsigned int buflen, qlen;
 };
 
-#ifdef CONFIG_LGE_USB_G_ANDROID
-static struct f_midi _midi;
-#endif
-#ifndef CONFIG_LGE_USB_G_ANDROID
 static struct f_midi *the_midi;
-#endif
 
 static inline struct f_midi *func_to_midi(struct usb_function *f)
 {
@@ -220,12 +215,6 @@ static inline struct usb_request *midi_alloc_ep_req(struct usb_ep *ep,
 	return alloc_ep_req(ep, length, length);
 }
 
-static void midi_free_ep_req(struct usb_ep *ep, struct usb_request *req)
-{
-	kfree(req->buf);
-	usb_ep_free_request(ep, req);
-}
-
 static const uint8_t f_midi_cin_length[] = {
 	0, 0, 2, 3, 3, 1, 2, 3, 3, 3, 3, 3, 2, 2, 3, 1
 };
@@ -291,7 +280,7 @@ f_midi_complete(struct usb_ep *ep, struct usb_request *req)
 		if (ep == midi->out_ep)
 			f_midi_handle_out_data(ep, req);
 
-		midi_free_ep_req(ep, req);
+		free_ep_req(ep, req);
 		return;
 
 	case -EOVERFLOW:	/* buffer overrun on read means that
@@ -413,9 +402,6 @@ static void f_midi_unbind(struct usb_configuration *c, struct usb_function *f)
 	struct usb_composite_dev *cdev = f->config->cdev;
 	struct f_midi *midi = func_to_midi(f);
 	struct snd_card *card;
-#ifdef CONFIG_LGE_USB_G_ANDROID
-	int i;
-#endif
 
 	DBG(cdev, "unbind\n");
 
@@ -425,32 +411,14 @@ static void f_midi_unbind(struct usb_configuration *c, struct usb_function *f)
 	card = midi->card;
 	midi->card = NULL;
 	if (card)
-#ifdef CONFIG_LGE_USB_G_ANDROID
 		snd_card_free_when_closed(card);
-#else
-		snd_card_free(card);
-#endif
 
 	kfree(midi->id);
 	midi->id = NULL;
-#ifdef CONFIG_LGE_USB_G_ANDROID
-	if (midi->out_ep)
-		midi->out_ep->driver_data = NULL;
-	if (midi->in_ep)
-		midi->in_ep->driver_data = NULL;
-	for (i = 0; i < midi->in_ports; ++i) {
-		kfree(midi->in_port[i]);
-		midi->in_port[i] = NULL;
-	}
-#endif
 
 	usb_free_all_descriptors(f);
-#ifndef CONFIG_LGE_USB_G_ANDROID
 	kfree(midi);
-#endif
-#ifndef CONFIG_LGE_USB_G_ANDROID
 	the_midi = NULL;
-#endif
 }
 
 static int f_midi_snd_free(struct snd_device *device)
@@ -611,7 +579,7 @@ static void f_midi_transmit(struct f_midi *midi, struct usb_request *req)
 	if (req->length > 0)
 		usb_ep_queue(ep, req, GFP_ATOMIC);
 	else
-		midi_free_ep_req(ep, req);
+		free_ep_req(ep, req);
 }
 
 static void f_midi_in_tasklet(unsigned long data)
@@ -625,10 +593,8 @@ static int f_midi_in_open(struct snd_rawmidi_substream *substream)
 	struct f_midi *midi = substream->rmidi->private_data;
 
 	/* check if midi got disabled or re-enabled quickly */
-#ifndef CONFIG_LGE_USB_G_ANDROID
 	if (midi != the_midi)
 		return -ENODEV;
-#endif
 
 	if (!midi->in_port[substream->number])
 		return -EINVAL;
@@ -652,10 +618,8 @@ static void f_midi_in_trigger(struct snd_rawmidi_substream *substream, int up)
 	struct f_midi *midi = substream->rmidi->private_data;
 
 	/* check if midi got disabled or re-enabled quickly */
-#ifndef CONFIG_LGE_USB_G_ANDROID
 	if (midi != the_midi)
 		return;
-#endif
 
 	if (!midi->in_port[substream->number])
 		return;
@@ -671,10 +635,8 @@ static int f_midi_out_open(struct snd_rawmidi_substream *substream)
 	struct f_midi *midi = substream->rmidi->private_data;
 
 	/* check if midi got disabled or re-enabled quickly */
-#ifndef CONFIG_LGE_USB_G_ANDROID
 	if (midi != the_midi)
 		return -ENODEV;
-#endif
 
 	if (substream->number >= MAX_PORTS)
 		return -EINVAL;
@@ -697,10 +659,8 @@ static void f_midi_out_trigger(struct snd_rawmidi_substream *substream, int up)
 	struct f_midi *midi = substream->rmidi->private_data;
 
 	/* check if midi got disabled or re-enabled quickly */
-#ifndef CONFIG_LGE_USB_G_ANDROID
 	if (midi != the_midi)
 		return;
-#endif
 
 	VDBG(midi, "%s()\n", __func__);
 
@@ -1046,16 +1006,12 @@ int /* __init */ f_midi_bind_config(struct usb_configuration *c,
 	if (in_ports > MAX_PORTS || out_ports > MAX_PORTS)
 		return -EINVAL;
 
-#ifdef CONFIG_LGE_USB_G_ANDROID
-	midi = &_midi;
-#else
 	/* allocate and initialize one new instance */
 	midi = kzalloc(sizeof *midi, GFP_KERNEL);
 	if (!midi) {
 		status = -ENOMEM;
 		goto fail;
 	}
-#endif
 
 	for (i = 0; i < in_ports; i++) {
 		struct gmidi_in_port *port = kzalloc(sizeof(*port), GFP_KERNEL);
@@ -1094,9 +1050,9 @@ int /* __init */ f_midi_bind_config(struct usb_configuration *c,
 	status = usb_add_function(c, &midi->func);
 	if (status)
 		goto setup_fail;
-#ifndef CONFIG_LGE_USB_G_ANDROID
+
 	the_midi = midi;
-#endif
+
 	if (config) {
 		config->card = midi->rmidi->card->number;
 		config->device = midi->rmidi->device;
@@ -1107,10 +1063,8 @@ int /* __init */ f_midi_bind_config(struct usb_configuration *c,
 setup_fail:
 	for (--i; i >= 0; i--)
 		kfree(midi->in_port[i]);
-#ifndef CONFIG_LGE_USB_G_ANDROID
 	kfree(midi);
 fail:
-#endif
 	return status;
 }
 

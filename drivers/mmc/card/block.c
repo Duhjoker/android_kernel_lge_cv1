@@ -38,7 +38,6 @@
 #include <linux/pm_runtime.h>
 #include <linux/ioprio.h>
 
-#define CREATE_TRACE_POINTS
 #include <trace/events/mmc.h>
 
 #include <linux/mmc/ioctl.h>
@@ -47,18 +46,8 @@
 #include <linux/mmc/host.h>
 #include <linux/mmc/mmc.h>
 #include <linux/mmc/sd.h>
-#ifdef CONFIG_MACH_LGE
-#include <linux/mmc/slot-gpio.h>
-#endif
-#ifdef CONFIG_MMC_FFU
-#include <linux/mmc/ffu.h>
-#endif
 
 #include <asm/uaccess.h>
-
-#if defined(CONFIG_LGE_MMC_DYNAMIC_LOG)
-#include <linux/mmc/debug_log.h>
-#endif
 
 #include "queue.h"
 
@@ -714,40 +703,6 @@ static int mmc_blk_ioctl_cmd(struct block_device *bdev,
 		}
 	}
 
-#ifdef CONFIG_MMC_FFU
-
-	if(cmd.opcode == MMC_FFU_DOWNLOAD_OP) {
-		err = mmc_ffu_download(card, &cmd, idata->buf,
-				idata->buf_bytes);
-		goto cmd_rel_host;
-	}
-	if(cmd.opcode == MMC_FFU_INSTALL_OP) {
-		err = mmc_ffu_install(card);
-		goto cmd_rel_host;
-	}
-	if(cmd.opcode == MMC_FFU_MID_OP) {
-		printk(KERN_INFO "[LGE][FFU][cid : %u]\n", card->cid.manfid);
-		if (copy_to_user((void __user *)(unsigned long) idata->ic.data_ptr,
-						&card->cid.manfid, sizeof(unsigned int))) {
-			err = -EFAULT;
-		}
-		else{
-			err = 0;
-		}
-		goto cmd_rel_host;
-	}
-	if(cmd.opcode == MMC_FFU_PNM_OP) {
-		printk(KERN_INFO "[LGE][FFU][pnm : %s]\n", card->cid.prod_name);
-		if (copy_to_user((void __user *)(unsigned long) idata->ic.data_ptr,
-						&card->cid.prod_name, idata->ic.blksz)) {
-			err = -EFAULT;
-		}
-		else {
-			err = 0;
-		}
-		goto cmd_rel_host;
-	}
-#endif
 	err = mmc_blk_part_switch(card, md);
 	if (err)
 		goto cmd_rel_host;
@@ -811,7 +766,7 @@ cmd_rel_host:
 			       mmc_hostname(card->host), __func__);
 	}
 cmd_rel_host_halt:
-	mmc_release_host(card->host);
+	mmc_put_card(card);
 
 cmd_done:
 	mmc_blk_put(md);
@@ -862,7 +817,7 @@ static int mmc_blk_ioctl_rpmb_cmd(struct block_device *bdev,
 {
 	struct mmc_blk_ioc_rpmb_data *idata;
 	struct mmc_blk_data *md;
-	struct mmc_card *card;
+	struct mmc_card *card = NULL;
 	struct mmc_command cmd = {0};
 	struct mmc_data data = {0};
 	struct mmc_request mrq = {NULL};
@@ -1018,7 +973,7 @@ idata_free:
 
 cmd_done:
 	mmc_blk_put(md);
-	if (card->cmdq_init)
+	if (card && card->cmdq_init)
 		wake_up(&card->host->cmdq_ctx.wait);
 	return err;
 }
@@ -1132,15 +1087,9 @@ static inline int mmc_blk_part_switch(struct mmc_card *card,
 				 card->ext_csd.part_time);
 
 		if (ret) {
-		#ifdef CONFIG_MACH_LGE
-			pr_err("%s: mmc_blk_part_switch failure, %d -> %d (%d)\n",
-				mmc_hostname(card->host), main_md->part_curr,
-					md->part_type, ret);
-		#else
 			pr_err("%s: mmc_blk_part_switch failure, %d -> %d\n",
 				mmc_hostname(card->host), main_md->part_curr,
 					md->part_type);
-		#endif
 			return ret;
 		}
 
@@ -1409,13 +1358,8 @@ static int mmc_blk_cmd_recovery(struct mmc_card *card, struct request *req,
 			break;
 
 		prev_cmd_status_valid = false;
-		#ifdef CONFIG_MACH_LGE
-		pr_err("[LGE][MMC]%s: error %d sending status command, %sing, cd-gpio:%d\n",
-		       req->rq_disk->disk_name, err, retry ? "retry" : "abort", mmc_gpio_get_cd(card->host));
-		#else
 		pr_err("%s: error %d sending status command, %sing\n",
 		       req->rq_disk->disk_name, err, retry ? "retry" : "abort");
-		#endif
 	}
 
 	/* We couldn't get a response from the card.  Give up. */
@@ -1505,20 +1449,6 @@ static int mmc_blk_reset(struct mmc_blk_data *md, struct mmc_host *host,
 
 	md->reset_done |= type;
 	err = mmc_hw_reset(host);
-/* LGE_CHANGE_S
- * Author : D3-5T-FS@lge.com
- * Change : eMMC can recover itself, but if it fails during re-init, recover routine does not activated. (eMMC is not accessible)
- */
-#if defined (CONFIG_LGE_MMC_RESET_IF_HANG)
-    /* in case that eMMC failed to re-initialize, retry five times and crash if it is eMMC. */
-    if (err == -ETIMEDOUT && host->caps & MMC_CAP_NONREMOVABLE) /* Only for eMMC (NONREMOVABLE) */
-    {
-        err = mmc_hw_reset(host);
-        pr_info("%s:%s: retry mmc_blk_reset() %d\n",
-                    mmc_hostname(host), __func__, err);
-    }
-#endif
-
 	if (err && err != -EOPNOTSUPP) {
 		/* We failed to reset so we need to abort the request */
 		pr_err("%s: %s: failed to reset %d\n", mmc_hostname(host),
@@ -1895,15 +1825,6 @@ static int mmc_blk_err_check(struct mmc_card *card,
 	struct mmc_blk_request *brq = &mq_mrq->brq;
 	struct request *req = mq_mrq->req;
 	int ecc_err = 0, gen_err = 0;
-
-#ifdef CONFIG_MACH_LGE
-	/* LGE_CHANGE, 2015-12-14, LGE-MSM8937-BSP-memory@lge.com
-	 * When uSD is not inserted, return proper error-value.
-	 */
-	if(mmc_card_sd(card) && !mmc_gpio_get_cd(card->host)) {
-		return MMC_BLK_NOMEDIUM;
-	}
-#endif
 
 	/*
 	 * sbc.error indicates a problem with the set block count
@@ -2579,7 +2500,7 @@ static void mmc_blk_packed_hdr_wrq_prep(struct mmc_queue_req *mqrq,
 	struct mmc_blk_data *md = mq->data;
 	struct mmc_packed *packed = mqrq->packed;
 	bool do_rel_wr, do_data_tag;
-	u32 *packed_cmd_hdr;
+	__le32 *packed_cmd_hdr;
 	u8 hdr_blocks;
 	u8 i = 1;
 
@@ -3062,8 +2983,6 @@ static void mmc_blk_cmdq_reset_all(struct mmc_host *host, int err)
 			mmc_hostname(host), __func__,
 			ctx_info->active_reqs, host->clk_requests);
 
-	mmc_blk_cmdq_reset(host, false);
-
 	for_each_set_bit(itag, &ctx_info->active_reqs,
 			host->num_cq_slots) {
 		ret = is_cmdq_dcmd_req(q, itag);
@@ -3175,6 +3094,215 @@ static enum blk_eh_timer_return mmc_blk_cmdq_req_timed_out(struct request *req)
 	return BLK_EH_HANDLED;
 }
 
+static void mmc_blk_cmdq_print_mrq_info(struct mmc_request *mrq, u32 tag,
+		int err)
+{
+	if (!mrq)
+		return;
+
+	if (mrq->cmd)
+		pr_err("%s: Task: %d cmd: %u flags: %u failed: %d\n",
+				mmc_hostname(mrq->host), tag, mrq->cmd->opcode,
+				mrq->cmd->flags, err);
+
+	if (mrq->data) {
+		pr_err("%s: Task: %d, Blk Addr:0x%u,", mmc_hostname(mrq->host),
+				tag, mrq->cmdq_req->blk_addr);
+		pr_err(" Blk cnt:0x%u, Blk sz:%u failed: %d\n",
+				mrq->cmdq_req->data.blocks,
+				mrq->cmdq_req->data.blksz, err);
+	}
+}
+
+static struct mmc_request *mmc_blk_cmdq_wp_handle(
+		struct mmc_cmdq_err_info *err_info, struct mmc_host *host)
+{
+	u32 cmd = 0, dat = 0;
+	struct mmc_request *err_mrq = NULL;
+
+	cmd = err_info->cmd;
+	dat = err_info->data_cmd;
+
+	err_info->remove_task = false;
+	err_info->fail_dev_pend = false;
+	err_info->fail_comp_task = true;
+
+	/*
+	 * If a write task is not going on in the controller, then the task
+	 * which caused error can be among the completed task list.
+	 *
+	 * For WP violations detected during DCMD commands,
+	 * like ERASE command.
+	 */
+	if (err_info->cmd_tag == err_info->dcmd_slot &&
+		(cmd == MMC_ERASE || cmd == MMC_SEND_STATUS) &&
+			err_info->cmd_valid) {
+		err_mrq = host->cmdq_ops->get_mrq_by_tag(host, err_info->tag);
+		clear_bit(err_info->cmd_tag, &err_info->dev_pend);
+		clear_bit(err_info->cmd_tag, &err_info->comp_status);
+		if (!err_mrq)
+			goto out;
+		err_info->remove_task = true;
+		err_info->tag = err_mrq->req->tag;
+		return err_mrq;
+	}
+
+	/*
+	 * If a write task was in execution when WP RED error was detected,
+	 * the WP violation may have been caused by it. So remove it. In this
+	 * case the completed tasks are innocent.
+	 */
+	if (dat == MMC_CMDQ_WRITE_TASK && err_info->data_valid) {
+		err_mrq = host->cmdq_ops->get_mrq_by_tag(host, err_info->tag);
+		clear_bit(err_info->data_tag, &err_info->dev_pend);
+		clear_bit(err_info->data_tag, &err_info->comp_status);
+		if (!err_mrq)
+			goto out;
+		err_info->remove_task = true;
+		err_info->fail_comp_task = false;
+	}
+	/*
+	 * Unless CMD45 is in CMD field of CQTERRI, the last executed CMD45 may
+	 * have caused the WP violation.
+	 * NOTE: We cannot get last executed CMD45 correctly always. So pick
+	 * last set task in CQ_DEV_PEND to avoid infinite loop
+	 */
+	if (cmd != MMC_CMDQ_TASK_ADDR)
+		err_info->fail_dev_pend = true;
+
+	if (err_info->tag < 0 && err_info->fail_comp_task) {
+		err_info->tag = 0;
+		err_info->remove_task = false;
+	}
+	pr_err("%s: Write protect violation detected\n",
+			mmc_hostname(host));
+	return err_mrq;
+out:
+	err_info->tag = -1;
+	return err_mrq;
+}
+
+static void mmc_blk_cmdq_remove_task(struct mmc_host *host,
+		struct mmc_cmdq_err_info *err_info, struct mmc_request *mrq,
+		int err, bool print_info) {
+
+	struct mmc_cmdq_context_info *ctx_info = &host->cmdq_ctx;
+	struct request *rq = mrq->req;
+	int tag = mrq->cmdq_req->tag;
+
+	if (!test_and_clear_bit(mrq->cmdq_req->tag, &ctx_info->active_reqs))
+		return;
+
+	if (print_info)
+		mmc_blk_cmdq_print_mrq_info(mrq, tag, err);
+
+	if (mrq->cmdq_req->cmdq_req_flags & DCMD) {
+		clear_bit(CMDQ_STATE_DCMD_ACTIVE,
+				&ctx_info->curr_state);
+		blk_end_request_all(rq, err);
+	} else {
+		WARN_ON(!test_and_clear_bit(mrq->cmdq_req->tag,
+					&ctx_info->data_active_reqs));
+		mmc_cmdq_post_req(host, mrq->cmdq_req->tag, err);
+		blk_end_request_all(rq, err);
+	}
+	mmc_host_clk_release(host);
+	mmc_put_card(host->card);
+	mmc_cmdq_clk_scaling_stop_busy(host, true, tag == err_info->dcmd_slot);
+
+}
+
+static void mmc_blk_cmdq_fail_mult_tasks(struct mmc_host *host,
+		unsigned long task_list, struct mmc_cmdq_err_info *err_info,
+		int err, bool print_info) {
+
+	struct mmc_request *err_mrq = NULL;
+	int tag;
+
+	for_each_set_bit(tag, &task_list, err_info->max_slot) {
+		err_mrq = host->cmdq_ops->get_mrq_by_tag(host, tag);
+		if (!err_mrq || !err_mrq->req)
+			continue;
+		mmc_blk_cmdq_remove_task(host, err_info,
+				err_mrq, err, print_info);
+	}
+};
+
+/*
+ * Error handler for cmdq if CQ enabled. Returns 0 if error is successfully
+ * handled. Returns negative value if fails.
+ */
+static void mmc_blk_cmdq_err_handle(struct mmc_host *host, u32 status, int err)
+{
+	struct mmc_request *mrq = host->err_mrq;
+	struct mmc_cmdq_err_info err_info;
+	u32 red_err_info = 0;
+	struct mmc_request *err_mrq = NULL;
+
+	if (host->cmdq_ops->err_info && host->cmdq_ops->get_mrq_by_tag)
+		host->cmdq_ops->err_info(host, &err_info, mrq);
+	else
+		return;
+
+	if (mrq->cmdq_req->resp_arg & CQ_RED) {
+		red_err_info = mrq->cmdq_req->resp_arg;
+	} else if (status & CQ_RED) {
+		red_err_info = status;
+		err_info.timedout = true;
+	}
+
+	if (red_err_info & CQ_RED) {
+		/*
+		 * The request which caused RED error may need to be
+		 * removed before resetting card and requeueing requests
+		 */
+		if (red_err_info & CQ_WP_RED) {
+			err_mrq = mmc_blk_cmdq_wp_handle(&err_info, host);
+			if (err_info.tag < 0)
+				return;
+			err = -EPERM;
+		} else {
+			pr_err("%s: unhandled RED error detected!\n",
+					mmc_hostname(host));
+			err_mrq = mrq;
+		}
+	}
+
+	if (err_mrq)
+		mrq = err_mrq;
+
+	/* Remove the request if marked for removal */
+	if (err_info.remove_task)
+		mmc_blk_cmdq_remove_task(host, &err_info, mrq, err, true);
+
+	/*
+	 * If there is a chance that one of the completed task caused error,
+	 * tell block layer that all completed tasks failed. Here priority is
+	 * given to removing the errored task than on saving innocent task. This
+	 * is to avoid data corruption at higher layers.
+	 */
+	if (err_info.fail_comp_task)
+		mmc_blk_cmdq_fail_mult_tasks(host, err_info.comp_status,
+				&err_info, err, true);
+	else
+		mmc_blk_cmdq_fail_mult_tasks(host, err_info.comp_status,
+				&err_info, 0, false);
+	/*
+	 * If there is a chance that one of the Dev Pending task caused error,
+	 * tell block layer that all Dev Pending tasks failed. Here priority is
+	 * given to aviod looping with an error causing task than on saving
+	 * innocent task.
+	 */
+	if (err_info.fail_dev_pend) {
+		pr_err("%s: %s: Failing all tasks in Device Pending : 0x%lx\n",
+				mmc_hostname(host), __func__,
+				err_info.dev_pend);
+		mmc_blk_cmdq_fail_mult_tasks(host, err_info.dev_pend,
+				&err_info, err, true);
+	}
+
+}
+
 /*
  * mmc_blk_cmdq_err: error handling of cmdq error requests.
  * Function should be called in context of error out request
@@ -3209,10 +3337,9 @@ static void mmc_blk_cmdq_err(struct mmc_queue *mq)
 	}
 
 	/* RED error - Fatal: requires reset */
-	if (mrq->cmdq_req->resp_err) {
+	if (mrq->cmdq_req->resp_err)
 		err = mrq->cmdq_req->resp_err;
-		goto reset;
-	}
+
 
 	/*
 	 * TIMEOUT errrors can happen because of execution error
@@ -3243,8 +3370,10 @@ static void mmc_blk_cmdq_err(struct mmc_queue *mq)
 		/* DCMD commands */
 		err = mrq->cmd->error;
 	}
-
 reset:
+	mmc_blk_cmdq_reset(host, false);
+	mmc_blk_cmdq_err_handle(host, status, err);
+
 	mmc_blk_cmdq_reset_all(host, err);
 	if (mrq->cmdq_req->resp_err)
 		mrq->cmdq_req->resp_err = false;
@@ -3293,11 +3422,10 @@ void mmc_blk_cmdq_complete_rq(struct request *rq)
 	 * or disable state so cannot receive any completion of
 	 * other requests.
 	 */
-	BUG_ON(test_bit(CMDQ_STATE_ERR, &ctx_info->curr_state));
+	WARN_ON(test_bit(CMDQ_STATE_ERR, &ctx_info->curr_state));
 
 	/* clear pending request */
-	BUG_ON(!test_and_clear_bit(cmdq_req->tag,
-				   &ctx_info->active_reqs));
+	BUG_ON(!test_and_clear_bit(cmdq_req->tag, &ctx_info->active_reqs));
 	if (cmdq_req->cmdq_req_flags & DCMD)
 		is_dcmd = true;
 	else
@@ -3316,7 +3444,7 @@ void mmc_blk_cmdq_complete_rq(struct request *rq)
 out:
 
 	mmc_cmdq_clk_scaling_stop_busy(host, true, is_dcmd);
-	if (!test_bit(CMDQ_STATE_ERR, &ctx_info->curr_state)) {
+	if (!(err || cmdq_req->resp_err)) {
 		mmc_host_clk_release(host);
 		wake_up(&ctx_info->wait);
 		mmc_put_card(host->card);
@@ -3594,6 +3722,7 @@ cmdq_switch:
 		pr_err("%s: %s: mmc_blk_cmdq_switch failed: %d\n",
 			mmc_hostname(host), __func__,  err);
 		ret = err;
+		goto out;
 	}
 cmdq_unhalt:
 	err = mmc_cmdq_halt(host, false);
@@ -3644,7 +3773,7 @@ static int mmc_blk_cmdq_issue_rq(struct mmc_queue *mq, struct request *req)
 		} else {
 			pr_err("%s: %s: partition switch failed err = %d\n",
 				md->disk->disk_name, __func__, err);
-			ret = 0;
+			ret = err;
 			goto out;
 		}
 	}
@@ -3836,7 +3965,7 @@ static struct mmc_blk_data *mmc_blk_alloc_req(struct mmc_card *card,
 	INIT_LIST_HEAD(&md->part);
 	md->usage = 1;
 
-	ret = mmc_init_queue(&md->queue, card, &md->lock, subname, area_type);
+	ret = mmc_init_queue(&md->queue, card, NULL, subname, area_type);
 	if (ret)
 		goto err_putdisk;
 
@@ -4251,9 +4380,6 @@ static int mmc_blk_probe(struct mmc_card *card)
 	mmc_set_drvdata(card, md);
 
 #ifdef CONFIG_MMC_BLOCK_DEFERRED_RESUME
-#ifdef CONFIG_MACH_LGE
-	if (!(card->host->caps & MMC_CAP_NONREMOVABLE))
-#endif
 	mmc_set_bus_resume_policy(card->host, 1);
 #endif
 	if (mmc_add_disk(md))
@@ -4333,10 +4459,6 @@ static int _mmc_blk_suspend(struct mmc_card *card, bool wait)
 static void mmc_blk_shutdown(struct mmc_card *card)
 {
 	_mmc_blk_suspend(card, 1);
-
-	/* send power off notification */
-	if (mmc_card_mmc(card))
-		mmc_send_pon(card);
 }
 
 #ifdef CONFIG_PM

@@ -17,7 +17,6 @@
 #ifndef __FP_H__
 #define __FP_H__
 
-/*LGE_CHANGE_S, porting for recording by QCT, 2015-12-17, seungmin.hong@lge.com*/
 /*
  * Normally would typedef'ed, but checkpatch doesn't like typedef.
  * Also should be normally typedef'ed to intmax_t but that doesn't seem to be
@@ -27,7 +26,6 @@
 
 /* (Arbitrarily) make the first 25% of the bits to be the fractional bits */
 #define FP_FRACTIONAL_BITS ((sizeof(fp_t) * 8) / 4)
-/*LGE_CHANGE_E, porting for recording by QCT, 2015-12-17, seungmin.hong@lge.com*/
 
 #define FP(__i, __f_n, __f_d) \
 	((((fp_t)(__i)) << FP_FRACTIONAL_BITS) + \
@@ -37,22 +35,22 @@
 #define FP_ONE FP_INT(1)
 #define FP_ZERO FP_INT(0)
 
-static inline size_t fp_frac_base(void) //LGE_CHANGE, porting for recording by QCT, 2015-12-17, seungmin.hong@lge.com
+static inline size_t fp_frac_base(void)
 {
 	return GENMASK(FP_FRACTIONAL_BITS - 1, 0);
 }
 
-static inline size_t fp_frac(fp_t a) //LGE_CHANGE, porting for recording by QCT, 2015-12-17, seungmin.hong@lge.com
+static inline size_t fp_frac(fp_t a)
 {
 	return a & GENMASK(FP_FRACTIONAL_BITS - 1, 0);
 }
 
-static inline size_t fp_int(fp_t a) //LGE_CHANGE, porting for recording by QCT, 2015-12-17, seungmin.hong@lge.com
+static inline size_t fp_int(fp_t a)
 {
 	return a >> FP_FRACTIONAL_BITS;
 }
 
-static inline size_t fp_round(fp_t a) //LGE_CHANGE, porting for recording by QCT, 2015-12-17, seungmin.hong@lge.com
+static inline size_t fp_round(fp_t a)
 {
 	/* is the fractional part >= frac_max / 2? */
 	bool round_up = fp_frac(a) >= fp_frac_base() / 2;

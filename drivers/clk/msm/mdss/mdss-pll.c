@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -24,12 +24,6 @@
 #include "mdss-pll.h"
 #include "mdss-dsi-pll.h"
 #include "mdss-hdmi-pll.h"
-
-#if IS_ENABLED(CONFIG_LGE_DISPLAY_COMMON)
-int lge_pll_ssc_disable;
-module_param_named(pll_ssc_disable, lge_pll_ssc_disable, int, 0);
-MODULE_PARM_DESC(pll_ssc_disable, "Disable pll ssc by panel");
-#endif
 
 int mdss_pll_resource_enable(struct mdss_pll_resources *pll_res, bool enable)
 {
@@ -257,12 +251,7 @@ static int mdss_pll_probe(struct platform_device *pdev)
 
 	pll_res->ssc_en = of_property_read_bool(pdev->dev.of_node,
 						"qcom,dsi-pll-ssc-en");
-#if IS_ENABLED(CONFIG_LGE_DISPLAY_COMMON)
-	if (lge_pll_ssc_disable) {
-		pr_info("%s: label=%s PLL SSC disabled\n", __func__, label);
-		pll_res->ssc_en = false;
-	}
-#endif
+
 	if (pll_res->ssc_en) {
 		pr_info("%s: label=%s PLL SSC enabled\n", __func__, label);
 

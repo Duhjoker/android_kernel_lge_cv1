@@ -1,4 +1,5 @@
-/* Copyright (c) 2011-2014, 2017 The Linux Foundataion. All rights reserved.
+/* Copyright (c) 2011-2014, 2017, 2019 The Linux Foundataion.
+ * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -25,14 +26,12 @@
 #undef CDBG
 #define CDBG(fmt, args...) pr_debug(fmt, ##args)
 
-/* LGE_CHANGE, camera stability task, Changed to inline function for RTB logging */
-#ifndef CONFIG_MSM_RTB//CONFIG_LGE_CAMERA_RTB_DEBUG
 void msm_camera_io_w(u32 data, void __iomem *addr)
 {
 	CDBG("%s: 0x%pK %08x\n", __func__,  (addr), (data));
 	writel_relaxed((data), (addr));
 }
-#endif
+
 /* This API is to write a block of data
 * to same address
 */
@@ -71,8 +70,6 @@ int32_t msm_camera_io_w_reg_block(const u32 *addr, void __iomem *base,
 	return 0;
 }
 
-/* LGE_CHANGE, camera stability task, Changed to inline function for RTB logging */
-#ifndef CONFIG_MSM_RTB//CONFIG_LGE_CAMERA_RTB_DEBUG
 void msm_camera_io_w_mb(u32 data, void __iomem *addr)
 {
 	CDBG("%s: 0x%pK %08x\n", __func__,  (addr), (data));
@@ -82,7 +79,7 @@ void msm_camera_io_w_mb(u32 data, void __iomem *addr)
 	/* ensure write is done */
 	wmb();
 }
-#endif
+
 int32_t msm_camera_io_w_mb_block(const u32 *addr, void __iomem *base, u32 len)
 {
 	int i;
@@ -102,8 +99,6 @@ int32_t msm_camera_io_w_mb_block(const u32 *addr, void __iomem *base, u32 len)
 	return 0;
 }
 
-/* LGE_CHANGE, camera stability task, Changed to inline function for RTB logging */
-#ifndef CONFIG_MSM_RTB//CONFIG_LGE_CAMERA_RTB_DEBUG
 u32 msm_camera_io_r(void __iomem *addr)
 {
 	uint32_t data = readl_relaxed(addr);
@@ -123,7 +118,7 @@ u32 msm_camera_io_r_mb(void __iomem *addr)
 	CDBG("%s: 0x%pK %08x\n", __func__,  (addr), (data));
 	return data;
 }
-#endif
+
 void msm_camera_io_memcpy_toio(void __iomem *dest_addr,
 	void __iomem *src_addr, u32 len)
 {
@@ -360,12 +355,13 @@ int msm_cam_clk_enable(struct device *dev, struct msm_cam_clk_info *clk_info,
 		}
 	} else {
 		for (i = num_clk - 1; i >= 0; i--) {
-			if (clk_ptr[i] != NULL) {
+			if (!IS_ERR_OR_NULL(clk_ptr[i])) {
 				CDBG("%s disable %s\n", __func__,
 					clk_info[i].clk_name);
 				clk_disable(clk_ptr[i]);
 				clk_unprepare(clk_ptr[i]);
 				clk_put(clk_ptr[i]);
+				clk_ptr[i] = NULL;
 			}
 		}
 	}
@@ -379,10 +375,11 @@ cam_clk_set_err:
 	clk_put(clk_ptr[i]);
 cam_clk_get_err:
 	for (i--; i >= 0; i--) {
-		if (clk_ptr[i] != NULL) {
+		if (!IS_ERR_OR_NULL(clk_ptr[i])) {
 			clk_disable(clk_ptr[i]);
 			clk_unprepare(clk_ptr[i]);
 			clk_put(clk_ptr[i]);
+			clk_ptr[i] = NULL;
 		}
 	}
 	return rc;

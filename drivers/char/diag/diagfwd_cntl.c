@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2017, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2011-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -26,10 +26,6 @@
 #include "diag_mux.h"
 
 #define FEATURE_SUPPORTED(x)	((feature_mask << (i * 8)) & (1 << x))
-
-#if defined(CONFIG_LGE_USB_DIAG_LOCK_SPR) || defined(CONFIG_LGE_USB_DIAG_LOCK_TRF)
-extern int user_diag_enable;
-#endif
 
 /* tracks which peripheral is undergoing SSR */
 static uint16_t reg_dirty;
@@ -362,6 +358,8 @@ static void process_incoming_feature_mask(uint8_t *buf, uint32_t len,
 		feature_mask_len = FEATURE_MASK_LEN;
 	}
 
+	diag_cmd_remove_reg_by_proc(peripheral);
+
 	driver->feature[peripheral].rcvd_feature_mask = 1;
 
 	for (i = 0; i < feature_mask_len && read_len < len; i++) {
@@ -406,8 +404,8 @@ static void process_last_event_report(uint8_t *buf, uint32_t len,
 	header = (struct diag_ctrl_last_event_report *)ptr;
 	event_size = ((header->event_last_id / 8) + 1);
 	if (event_size >= driver->event_mask_size) {
-		pr_debug("diag: In %s, receiving event mask size more that Apps can handle\n",
-			 __func__);
+		DIAG_LOG(DIAG_DEBUG_MASKS,
+		"diag: receiving event mask size more that Apps can handle\n");
 		temp = krealloc(driver->event_mask->ptr, event_size,
 				GFP_KERNEL);
 		if (!temp) {
@@ -480,7 +478,12 @@ static int update_msg_mask_tbl_entry(struct diag_msg_mask_t *mask,
 	}
 	if (range->ssid_last >= mask->ssid_last) {
 		temp_range = range->ssid_last - mask->ssid_first + 1;
-		mask->ssid_last = range->ssid_last;
+		if (temp_range > MAX_SSID_PER_RANGE) {
+			temp_range = MAX_SSID_PER_RANGE;
+			mask->ssid_last = mask->ssid_first + temp_range - 1;
+		} else
+			mask->ssid_last = range->ssid_last;
+		mask->ssid_last_tools = mask->ssid_last;
 		mask->range = temp_range;
 	}
 
@@ -521,6 +524,10 @@ static void process_ssid_range_report(uint8_t *buf, uint32_t len,
 		mask_ptr = (struct diag_msg_mask_t *)msg_mask.ptr;
 		found = 0;
 		for (j = 0; j < driver->msg_mask_tbl_count; j++, mask_ptr++) {
+			if (!mask_ptr->ptr || !ssid_range) {
+				found = 1;
+				break;
+			}
 			if (mask_ptr->ssid_first != ssid_range->ssid_first)
 				continue;
 			mutex_lock(&mask_ptr->lock);
@@ -539,6 +546,8 @@ static void process_ssid_range_report(uint8_t *buf, uint32_t len,
 
 		new_size = (driver->msg_mask_tbl_count + 1) *
 			   sizeof(struct diag_msg_mask_t);
+		DIAG_LOG(DIAG_DEBUG_MASKS,
+			"diag: receiving msg mask size more that Apps can handle\n");
 		temp = krealloc(msg_mask.ptr, new_size, GFP_KERNEL);
 		if (!temp) {
 			pr_err("diag: In %s, Unable to add new ssid table to msg mask, ssid first: %d, last: %d\n",
@@ -547,6 +556,7 @@ static void process_ssid_range_report(uint8_t *buf, uint32_t len,
 			continue;
 		}
 		msg_mask.ptr = temp;
+		mask_ptr = (struct diag_msg_mask_t *)msg_mask.ptr;
 		err = diag_create_msg_mask_table_entry(mask_ptr, ssid_range);
 		if (err) {
 			pr_err("diag: In %s, Unable to create a new msg mask table entry, first: %d last: %d err: %d\n",
@@ -586,6 +596,10 @@ static void diag_build_time_mask_update(uint8_t *buf,
 	num_items = range->ssid_last - range->ssid_first + 1;
 
 	for (i = 0; i < driver->bt_msg_mask_tbl_count; i++, build_mask++) {
+		if (!build_mask->ptr) {
+			found = 1;
+			break;
+		}
 		if (build_mask->ssid_first != range->ssid_first)
 			continue;
 		found = 1;
@@ -596,7 +610,8 @@ static void diag_build_time_mask_update(uint8_t *buf,
 			       __func__);
 		}
 		dest_ptr = build_mask->ptr;
-		for (j = 0; j < build_mask->range; j++, mask_ptr++, dest_ptr++)
+		for (j = 0; (j < build_mask->range) && mask_ptr && dest_ptr;
+			j++, mask_ptr++, dest_ptr++)
 			*(uint32_t *)dest_ptr |= *mask_ptr;
 		mutex_unlock(&build_mask->lock);
 		break;
@@ -604,8 +619,12 @@ static void diag_build_time_mask_update(uint8_t *buf,
 
 	if (found)
 		goto end;
+
 	new_size = (driver->bt_msg_mask_tbl_count + 1) *
 		   sizeof(struct diag_msg_mask_t);
+	DIAG_LOG(DIAG_DEBUG_MASKS,
+		"diag: receiving build time mask size more that Apps can handle\n");
+
 	temp = krealloc(driver->build_time_mask->ptr, new_size, GFP_KERNEL);
 	if (!temp) {
 		pr_err("diag: In %s, unable to create a new entry for build time mask\n",
@@ -613,6 +632,7 @@ static void diag_build_time_mask_update(uint8_t *buf,
 		goto end;
 	}
 	driver->build_time_mask->ptr = temp;
+	build_mask = (struct diag_msg_mask_t *)driver->build_time_mask->ptr;
 	err = diag_create_msg_mask_table_entry(build_mask, range);
 	if (err) {
 		pr_err("diag: In %s, Unable to create a new msg mask table entry, err: %d\n",
@@ -656,20 +676,13 @@ static void process_build_mask_report(uint8_t *buf, uint32_t len,
 	}
 }
 
-#if defined(CONFIG_LGE_USB_DIAG_LOCK_SPR) || defined(CONFIG_LGE_USB_DIAG_LOCK_TRF)
-extern int set_diag_enable(int);
-#endif
-
 void diag_cntl_process_read_data(struct diagfwd_info *p_info, void *buf,
 				 int len)
 {
-	int read_len = 0;
-	int header_len = sizeof(struct diag_ctrl_pkt_header_t);
+	uint32_t read_len = 0;
+	uint32_t header_len = sizeof(struct diag_ctrl_pkt_header_t);
 	uint8_t *ptr = buf;
 	struct diag_ctrl_pkt_header_t *ctrl_pkt = NULL;
-#if defined(CONFIG_LGE_USB_DIAG_LOCK_SPR) || defined(CONFIG_LGE_USB_DIAG_LOCK_TRF)
-	struct diag_ctrl_cmd_reg *reg = NULL;
-#endif
 
 	if (!buf || len <= 0 || !p_info)
 		return;
@@ -715,13 +728,6 @@ void diag_cntl_process_read_data(struct diagfwd_info *p_info, void *buf,
 			process_pd_status(ptr, ctrl_pkt->len,
 						p_info->peripheral);
 			break;
-#if defined(CONFIG_LGE_USB_DIAG_LOCK_SPR) || defined(CONFIG_LGE_USB_DIAG_LOCK_TRF)
-		case DIAG_CTRL_MSG_LGE_DIAG_ENABLE:
-			reg = (struct diag_ctrl_cmd_reg *)ptr;
-			user_diag_enable = reg->cmd_code;
-			pr_info("diag: In %s, diag_enable: %d\n", __func__, reg->cmd_code);
-			break;
-#endif
 		default:
 			pr_debug("diag: Control packet %d not supported\n",
 				 ctrl_pkt->pkt_id);

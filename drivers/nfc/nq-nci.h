@@ -10,8 +10,8 @@
  * GNU General Public License for more details.
  */
 
-#ifndef __NFC_NCI_H
-#define __NFC_NCI_H
+#ifndef __NQ_NCI_H
+#define __NQ_NCI_H
 
 #include <linux/i2c.h>
 #include <linux/types.h>
@@ -32,7 +32,6 @@
 #define NFCC_INITIAL_CORE_RESET_NTF	_IOW(0xE9, 0x10, unsigned int)
 
 #define NFC_RX_BUFFER_CNT_START		(0x0)
-
 #define PAYLOAD_HEADER_LENGTH		(0x3)
 #define PAYLOAD_LENGTH_MAX		(256)
 #define BYTE				(0x8)
@@ -49,6 +48,7 @@ enum nfcc_chip_variant {
 	NFCC_NQ_220		= 0x58,	/**< NFCC NQ220 */
 	NFCC_NQ_310		= 0x40,	/**< NFCC NQ310 */
 	NFCC_NQ_330		= 0x51,	/**< NFCC NQ330 */
+	NFCC_PN66T		= 0x18,	/**< NFCC PN66T */
 	NFCC_NOT_SUPPORTED	= 0xFF	/**< NFCC is not supported */
 };
 #endif

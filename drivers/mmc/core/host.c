@@ -312,28 +312,74 @@ static inline void mmc_host_clk_sysfs_init(struct mmc_host *host)
 
 #endif
 
-#ifdef CONFIG_LGE_SHOW_SDCARD_DETECT_PIN_STATUS
-static ssize_t cd_status_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
+void mmc_retune_enable(struct mmc_host *host)
 {
-	struct mmc_host *host = cls_dev_to_mmc_host(dev);
+	host->can_retune = 1;
+	if (host->retune_period)
+		mod_timer(&host->retune_timer,
+			  jiffies + host->retune_period * HZ);
+}
+EXPORT_SYMBOL(mmc_retune_enable);
 
-	return snprintf(buf, PAGE_SIZE, "%d\n", mmc_gpio_get_cd(host));
+void mmc_retune_disable(struct mmc_host *host)
+{
+	host->can_retune = 0;
+	del_timer_sync(&host->retune_timer);
+	host->retune_now = 0;
+	host->need_retune = 0;
+}
+EXPORT_SYMBOL(mmc_retune_disable);
+
+void mmc_retune_timer_stop(struct mmc_host *host)
+{
+	del_timer_sync(&host->retune_timer);
+}
+EXPORT_SYMBOL(mmc_retune_timer_stop);
+
+void mmc_retune_hold(struct mmc_host *host)
+{
+	if (!host->hold_retune)
+		host->retune_now = 1;
+	host->hold_retune += 1;
 }
 
-
-DEVICE_ATTR(cd_status, S_IRUGO,
-		cd_status_show, NULL);
-
-static inline void mmc_host_cd_status_sysfs_init(struct mmc_host *host)
+void mmc_retune_release(struct mmc_host *host)
 {
-
-
-	if (device_create_file(&host->class_dev, &dev_attr_cd_status))
-		pr_err("%s: Failed to create clkgate_delay sysfs entry\n",
-				mmc_hostname(host));
+	if (host->hold_retune)
+		host->hold_retune -= 1;
+	else
+		WARN_ON(1);
 }
-#endif
+
+int mmc_retune(struct mmc_host *host)
+{
+	int err;
+
+	if (host->retune_now)
+		host->retune_now = 0;
+	else
+		return 0;
+
+	if (!host->need_retune || host->doing_retune || !host->card)
+		return 0;
+
+	host->need_retune = 0;
+
+	host->doing_retune = 1;
+
+	err = mmc_execute_tuning(host->card);
+
+	host->doing_retune = 0;
+
+	return err;
+}
+
+static void mmc_retune_timer(unsigned long data)
+{
+	struct mmc_host *host = (struct mmc_host *)data;
+
+	mmc_retune_needed(host);
+}
 
 /**
  *	mmc_of_parse() - parse host's device-tree node
@@ -550,6 +596,7 @@ struct mmc_host *mmc_alloc_host(int extra, struct device *dev)
 #ifdef CONFIG_PM
 	host->pm_notify.notifier_call = mmc_pm_notify;
 #endif
+	setup_timer(&host->retune_timer, mmc_retune_timer, (unsigned long)host);
 
 	/*
 	 * By default, hosts do not support SGIO or large requests.
@@ -594,11 +641,6 @@ static ssize_t store_enable(struct device *dev,
 	mmc_get_card(host->card);
 
 	if (!value) {
-		if (!mmc_can_scale_clk(host)) {
-			mmc_put_card(host->card);
-			return count;
-		}
-
 		/*turning off clock scaling*/
 		mmc_exit_clk_scaling(host);
 		host->caps2 &= ~MMC_CAP2_CLK_SCALE;
@@ -815,10 +857,6 @@ int mmc_add_host(struct mmc_host *host)
 
 #ifdef CONFIG_DEBUG_FS
 	mmc_add_host_debugfs(host);
-#endif
-#ifdef CONFIG_LGE_SHOW_SDCARD_DETECT_PIN_STATUS
-    if (!(host->caps & MMC_CAP_NONREMOVABLE))
-	    mmc_host_cd_status_sysfs_init(host);
 #endif
 	mmc_host_clk_sysfs_init(host);
 	mmc_trace_init(host);

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009-2016, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2009-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -28,7 +28,6 @@
 #include <linux/stat.h>
 #include <linux/string.h>
 #include <linux/types.h>
-#include <linux/io.h>
 
 #include <asm/system_misc.h>
 
@@ -67,9 +66,7 @@ enum {
 	HW_PLATFORM_STP = 23,
 	HW_PLATFORM_SBC = 24,
 	HW_PLATFORM_ADP = 25,
-	HW_PLATFORM_LGPS29 = 0x60,
-	HW_PLATFORM_LGPS29_1 = 0x61,
-	HW_PLATFORM_LV3_KR = 0x64,
+	HW_PLATFORM_TTP = 30,
 	HW_PLATFORM_INVALID
 };
 
@@ -91,9 +88,7 @@ const char *hw_platform[] = {
 	[HW_PLATFORM_STP] = "STP",
 	[HW_PLATFORM_SBC] = "SBC",
 	[HW_PLATFORM_ADP] = "ADP",
-	[HW_PLATFORM_LGPS29] = "LGPS29",
-	[HW_PLATFORM_LGPS29_1] = "LGPS29_1",
-	[HW_PLATFORM_LV3_KR] = "LV3_KR",
+	[HW_PLATFORM_TTP] = "TTP",
 };
 
 enum {
@@ -566,6 +561,8 @@ static struct msm_soc_info cpu_of_id[] = {
 
 	/* SDM450 ID */
 	[338] = {MSM_CPU_SDM450, "SDM450"},
+	[351] = {MSM_CPU_SDM450, "SDA450"},
+
 
 	/* 9607 IDs */
 	[290] = {MSM_CPU_9607, "MDM9607"},
@@ -573,13 +570,18 @@ static struct msm_soc_info cpu_of_id[] = {
 	[297] = {MSM_CPU_9607, "MDM9207"},
 	[298] = {MSM_CPU_9607, "MDM9307"},
 	[299] = {MSM_CPU_9607, "MDM9628"},
+	[322] = {MSM_CPU_9607, "MDM9206"},
 
-	/* Californium IDs */
-	[279] = {MSM_CPU_CALIFORNIUM, "MDMCALIFORNIUM"},
-	[283] = {MSM_CPU_CALIFORNIUM, "MDMCALIFORNIUM"},
-	[284] = {MSM_CPU_CALIFORNIUM, "MDMCALIFORNIUM"},
-	[285] = {MSM_CPU_CALIFORNIUM, "MDMCALIFORNIUM"},
-	[286] = {MSM_CPU_CALIFORNIUM, "MDMCALIFORNIUM"},
+	/* 9650 IDs */
+	[279] = {MSM_CPU_9650, "MDM9650"},
+	[283] = {MSM_CPU_9650, "MDM9650"},
+	[284] = {MSM_CPU_9650, "MDM9650"},
+	[285] = {MSM_CPU_9650, "MDM9650"},
+	[286] = {MSM_CPU_9650, "MDM9650"},
+
+	/* SDX20 IDs */
+	[314] = {SDX_CPU_20, "SDX20"},
+	[333] = {SDX_CPU_20, "SDX20"},
 
 	/*MSM8937 ID  */
 	[294] = {MSM_CPU_8937, "MSM8937"},
@@ -596,6 +598,9 @@ static struct msm_soc_info cpu_of_id[] = {
 
 	/* MSM8940 IDs */
 	[313] = {MSM_CPU_8940, "MSM8940"},
+
+	/* MDM9150 IDs */
+	[359] = {MSM_CPU_9150, "MDM9150"},
 
 	/* Uninitialized IDs are not known to run Linux.
 	   MSM_CPU_UNKNOWN is set to 0 to ensure these IDs are
@@ -1151,22 +1156,6 @@ msm_get_images(struct device *dev,
 	return pos;
 }
 
-#define QFPROM_RAW_SERIAL_NUM_LSB 0xA4128
-static ssize_t socinfo_show_msm_serial(struct device *dev,
-		struct device_attribute *attr, char *buf)
-{
-	unsigned int serial = 0;
-	void *addr = ioremap(QFPROM_RAW_SERIAL_NUM_LSB, SZ_4K);
-
-	if (!addr)
-		return 0;
-
-	serial = readl_relaxed(addr);
-
-	iounmap(addr);
-	return snprintf(buf, PAGE_SIZE, "%08x\n", serial);
-}
-
 static struct device_attribute msm_soc_attr_raw_version =
 	__ATTR(raw_version, S_IRUGO, msm_get_raw_version,  NULL);
 
@@ -1249,9 +1238,6 @@ static struct device_attribute select_image =
 static struct device_attribute images =
 	__ATTR(images, S_IRUGO, msm_get_images, NULL);
 
-static struct device_attribute msm_soc_attr_msm_serial =
-	__ATTR(msm_serial, S_IRUGO, socinfo_show_msm_serial, NULL);
-
 static void * __init setup_dummy_socinfo(void)
 {
 	if (early_machine_is_apq8084()) {
@@ -1282,9 +1268,13 @@ static void * __init setup_dummy_socinfo(void)
 		dummy_socinfo.id = 238;
 		strlcpy(dummy_socinfo.build_id, "mdm9640 - ",
 			sizeof(dummy_socinfo.build_id));
-	} else if (early_machine_is_mdmcalifornium()) {
+	} else if (early_machine_is_mdm9650()) {
 		dummy_socinfo.id = 286;
-		strlcpy(dummy_socinfo.build_id, "mdmcalifornium - ",
+		strlcpy(dummy_socinfo.build_id, "mdm9650 - ",
+			sizeof(dummy_socinfo.build_id));
+	} else if (early_machine_is_sdx20()) {
+		dummy_socinfo.id = 314;
+		strlcpy(dummy_socinfo.build_id, "sdx20 - ",
 			sizeof(dummy_socinfo.build_id));
 	} else if (early_machine_is_msm8994()) {
 		dummy_socinfo.id = 207;
@@ -1317,6 +1307,10 @@ static void * __init setup_dummy_socinfo(void)
 	} else if (early_machine_is_sdm450()) {
 		dummy_socinfo.id = 338;
 		strlcpy(dummy_socinfo.build_id, "sdm450 - ",
+			sizeof(dummy_socinfo.build_id));
+	} else if (early_machine_is_sda450()) {
+		dummy_socinfo.id = 351;
+		strlcpy(dummy_socinfo.build_id, "sda450 - ",
 			sizeof(dummy_socinfo.build_id));
 	} else if (early_machine_is_mdm9607()) {
 		dummy_socinfo.id = 290;
@@ -1401,8 +1395,6 @@ static void __init populate_soc_sysfs_files(struct device *msm_soc_device)
 	case SOCINFO_VERSION(0, 1):
 		device_create_file(msm_soc_device,
 					&msm_soc_attr_build_id);
-		device_create_file(msm_soc_device,
-					&msm_soc_attr_msm_serial);
 		break;
 	default:
 		pr_err("Unknown socinfo format: v%u.%u\n",

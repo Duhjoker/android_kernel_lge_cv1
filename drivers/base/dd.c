@@ -28,11 +28,6 @@
 
 #include "base.h"
 #include "power/power.h"
-#if defined(CONFIG_MACH_LGE)
-#include <linux/timer.h>
-#include <linux/debugfs.h>
-#endif
-#include <soc/qcom/lge/board_lge.h>
 
 /*
  * Deferred Probe infrastructure.
@@ -303,46 +298,10 @@ EXPORT_SYMBOL_GPL(device_bind_driver);
 static atomic_t probe_count = ATOMIC_INIT(0);
 static DECLARE_WAIT_QUEUE_HEAD(probe_waitqueue);
 
-#if defined(CONFIG_MACH_LGE)
-static int nsec64_probe_spend = 30000; /* over 30ms */
-static int pos = 0;
-static int create_debugfs = 0;
-char probe_time[1024] = "";
-
-static struct dentry *debugfs_probe_time;
-
-static int probe_time_show(struct seq_file *m, void *unused)
-{
-	return seq_printf(m, "%s\n", probe_time);
-}
-
-static int probe_time_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, probe_time_show, NULL);
-}
-
-static const struct file_operations probe_time_fops = {
-	.open		= probe_time_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-};
-#endif
 static int really_probe(struct device *dev, struct device_driver *drv)
 {
 	int ret = 0;
 	int local_trigger_count = atomic_read(&deferred_trigger_count);
-#if defined(CONFIG_MACH_LGE)
-	ktime_t bus_stime, bus_etime, drv_stime, drv_etime;
-
-	if (!create_debugfs) {
-		debugfs_probe_time = debugfs_create_file("probe_time",
-							S_IRUGO, NULL, NULL,
-							&probe_time_fops);
-		create_debugfs = 1;
-	}
-	if (pos > sizeof(probe_time) - 100)
-		pos = 0;
-#endif
 
 	atomic_inc(&probe_count);
 	pr_debug("bus: '%s': %s: probing driver %s with device %s\n",
@@ -363,67 +322,11 @@ static int really_probe(struct device *dev, struct device_driver *drv)
 	}
 
 	if (dev->bus->probe) {
-#if defined(CONFIG_MACH_LGE)
-		if (nsec64_probe_spend)
-			bus_stime = ktime_get();
-#endif
 		ret = dev->bus->probe(dev);
-#if defined(CONFIG_MACH_LGE)
-		if (nsec64_probe_spend) {
-			int usecs, bus_us;
-			u64 usecs64, bus_us64;
-			bus_etime = ktime_get();
-			bus_us64 = ktime_to_ns(bus_stime);
-			do_div(bus_us64, NSEC_PER_USEC);
-			bus_us = bus_us64;
-			usecs64 = ktime_to_ns(ktime_sub(bus_etime, bus_stime));
-			do_div(usecs64, NSEC_PER_USEC);
-			usecs = usecs64;
-			if (usecs64 > (u64)nsec64_probe_spend-1) {
-				pos += sprintf(&probe_time[pos], "%d %s %d\n",
-					bus_us/1000,
-					dev_driver_string(dev),
-					usecs/1000);
-				printk(KERN_EMERG
-					"bus probe : %d %s %d\n",
-					bus_us/1000,
-					dev_driver_string(dev),
-					usecs/1000);
-			}
-		}
-#endif
 		if (ret)
 			goto probe_failed;
 	} else if (drv->probe) {
-#if defined(CONFIG_MACH_LGE)
-		if (nsec64_probe_spend)
-			drv_stime = ktime_get();
-#endif
 		ret = drv->probe(dev);
-#if defined(CONFIG_MACH_LGE)
-		if (nsec64_probe_spend) {
-			int usecs, drv_us;
-			u64 usecs64, drv_us64;
-			drv_etime = ktime_get();
-			drv_us64 = ktime_to_ns(drv_stime);
-			do_div(drv_us64, NSEC_PER_USEC);
-			drv_us = drv_us64;
-			usecs64 = ktime_to_ns(ktime_sub(drv_etime, drv_stime));
-			do_div(usecs64, NSEC_PER_USEC);
-			usecs = usecs64;
-			if (usecs64 > (u64)nsec64_probe_spend-1) {
-				pos += sprintf(&probe_time[pos], "%d %s %d\n",
-					drv_us/1000,
-					dev_driver_string(dev),
-					usecs/1000);
-				printk(KERN_EMERG
-					"drv probe : %d %s %d\n",
-					drv_us/1000,
-					dev_driver_string(dev),
-					usecs/1000);
-			}
-		}
-#endif
 		if (ret)
 			goto probe_failed;
 	}
@@ -449,17 +352,10 @@ probe_failed:
 			driver_deferred_probe_trigger();
 	} else if (ret != -ENODEV && ret != -ENXIO) {
 		/* driver matched but the probe failed */
-#if defined(CONFIG_PRE_SELF_DIAGNOSIS)
-	if(!strstr((char*)drv->name,"jtag") && !strstr((char*)drv->name,"coresight"))
-		lge_pre_self_diagnosis((char *) drv->bus->name,4,(char *) dev_name(dev),(char *) drv->name, ret);
-#endif
 		printk(KERN_WARNING
 		       "%s: probe of %s failed with error %d\n",
 		       drv->name, dev_name(dev), ret);
 	} else {
-#if defined(CONFIG_PRE_SELF_DIAGNOSIS)
-		lge_pre_self_diagnosis((char *) drv->bus->name,0,(char *) dev_name(dev),(char *) drv->name, ret);
-#endif
 		pr_debug("%s: probe of %s rejects match %d\n",
 		       drv->name, dev_name(dev), ret);
 	}
@@ -488,6 +384,7 @@ int driver_probe_done(void)
 		return -EBUSY;
 	return 0;
 }
+EXPORT_SYMBOL_GPL(driver_probe_done);
 
 /**
  * wait_for_device_probe
@@ -529,14 +426,150 @@ int driver_probe_device(struct device_driver *drv, struct device *dev)
 	return ret;
 }
 
-static int __device_attach(struct device_driver *drv, void *data)
+bool driver_allows_async_probing(struct device_driver *drv)
 {
-	struct device *dev = data;
+	switch (drv->probe_type) {
+	case PROBE_PREFER_ASYNCHRONOUS:
+		return true;
+
+	case PROBE_FORCE_SYNCHRONOUS:
+		return false;
+
+	default:
+		if (module_requested_async_probing(drv->owner))
+			return true;
+
+		return false;
+	}
+}
+
+struct device_attach_data {
+	struct device *dev;
+
+	/*
+	 * Indicates whether we are are considering asynchronous probing or
+	 * not. Only initial binding after device or driver registration
+	 * (including deferral processing) may be done asynchronously, the
+	 * rest is always synchronous, as we expect it is being done by
+	 * request from userspace.
+	 */
+	bool check_async;
+
+	/*
+	 * Indicates if we are binding synchronous or asynchronous drivers.
+	 * When asynchronous probing is enabled we'll execute 2 passes
+	 * over drivers: first pass doing synchronous probing and second
+	 * doing asynchronous probing (if synchronous did not succeed -
+	 * most likely because there was no driver requiring synchronous
+	 * probing - and we found asynchronous driver during first pass).
+	 * The 2 passes are done because we can't shoot asynchronous
+	 * probe for given device and driver from bus_for_each_drv() since
+	 * driver pointer is not guaranteed to stay valid once
+	 * bus_for_each_drv() iterates to the next driver on the bus.
+	 */
+	bool want_async;
+
+	/*
+	 * We'll set have_async to 'true' if, while scanning for matching
+	 * driver, we'll encounter one that requests asynchronous probing.
+	 */
+	bool have_async;
+};
+
+static int __device_attach_driver(struct device_driver *drv, void *_data)
+{
+	struct device_attach_data *data = _data;
+	struct device *dev = data->dev;
+	bool async_allowed;
+
+	/*
+	 * Check if device has already been claimed. This may
+	 * happen with driver loading, device discovery/registration,
+	 * and deferred probe processing happens all at once with
+	 * multiple threads.
+	 */
+	if (dev->driver)
+		return -EBUSY;
 
 	if (!driver_match_device(drv, dev))
 		return 0;
 
+	async_allowed = driver_allows_async_probing(drv);
+
+	if (async_allowed)
+		data->have_async = true;
+
+	if (data->check_async && async_allowed != data->want_async)
+		return 0;
+
 	return driver_probe_device(drv, dev);
+}
+
+static void __device_attach_async_helper(void *_dev, async_cookie_t cookie)
+{
+	struct device *dev = _dev;
+	struct device_attach_data data = {
+		.dev		= dev,
+		.check_async	= true,
+		.want_async	= true,
+	};
+
+	device_lock(dev);
+
+	bus_for_each_drv(dev->bus, NULL, &data, __device_attach_driver);
+	dev_dbg(dev, "async probe completed\n");
+
+	pm_request_idle(dev);
+
+	device_unlock(dev);
+
+	put_device(dev);
+}
+
+static int __device_attach(struct device *dev, bool allow_async)
+{
+	int ret = 0;
+
+	device_lock(dev);
+	if (dev->driver) {
+		if (klist_node_attached(&dev->p->knode_driver)) {
+			ret = 1;
+			goto out_unlock;
+		}
+		ret = device_bind_driver(dev);
+		if (ret == 0)
+			ret = 1;
+		else {
+			dev->driver = NULL;
+			ret = 0;
+		}
+	} else {
+		struct device_attach_data data = {
+			.dev = dev,
+			.check_async = allow_async,
+			.want_async = false,
+		};
+
+		ret = bus_for_each_drv(dev->bus, NULL, &data,
+					__device_attach_driver);
+		if (!ret && allow_async && data.have_async) {
+			/*
+			 * If we could not find appropriate driver
+			 * synchronously and we are allowed to do
+			 * async probes and there are drivers that
+			 * want to probe asynchronously, we'll
+			 * try them.
+			 */
+			dev_dbg(dev, "scheduling asynchronous probe\n");
+			get_device(dev);
+			async_schedule(__device_attach_async_helper, dev);
+		} else {
+			pm_request_idle(dev);
+		}
+	}
+out_unlock:
+	device_unlock(dev);
+	return ret;
 }
 
 /**
@@ -555,30 +588,14 @@ static int __device_attach(struct device_driver *drv, void *data)
  */
 int device_attach(struct device *dev)
 {
-	int ret = 0;
-
-	device_lock(dev);
-	if (dev->driver) {
-		if (klist_node_attached(&dev->p->knode_driver)) {
-			ret = 1;
-			goto out_unlock;
-		}
-		ret = device_bind_driver(dev);
-		if (ret == 0)
-			ret = 1;
-		else {
-			dev->driver = NULL;
-			ret = 0;
-		}
-	} else {
-		ret = bus_for_each_drv(dev->bus, NULL, dev, __device_attach);
-		pm_request_idle(dev);
-	}
-out_unlock:
-	device_unlock(dev);
-	return ret;
+	return __device_attach(dev, false);
 }
 EXPORT_SYMBOL_GPL(device_attach);
+
+void device_initial_probe(struct device *dev)
+{
+	__device_attach(dev, true);
+}
 
 static int __driver_attach(struct device *dev, void *data)
 {
@@ -634,6 +651,9 @@ static void __device_release_driver(struct device *dev)
 
 	drv = dev->driver;
 	if (drv) {
+		if (driver_allows_async_probing(drv))
+			async_synchronize_full();
+
 		pm_runtime_get_sync(dev);
 
 		driver_sysfs_remove(dev);

@@ -15,10 +15,6 @@
 #include <linux/mmc/card.h>
 #include <linux/mmc/sdio_ids.h>
 
-#if defined(CONFIG_LGE_MMC_DYNAMIC_LOG)
-#include <linux/mmc/debug_log.h>
-#endif
-
 #ifndef SDIO_VENDOR_ID_TI
 #define SDIO_VENDOR_ID_TI		0x0097
 #endif
@@ -83,6 +79,13 @@
 #define SDIO_DEVICE_ID_QCA9377		0x701
 #endif
 
+#ifndef SDIO_VENDOR_ID_QCA9379
+#define SDIO_VENDOR_ID_QCA9379		0x271
+#endif
+
+#ifndef SDIO_DEVICE_ID_QCA9379
+#define SDIO_DEVICE_ID_QCA9379		0x801
+#endif
 
 /*
  * This hook just adds a quirk for all sdio devices
@@ -135,6 +138,9 @@ static const struct mmc_fixup mmc_fixup_methods[] = {
 
 	SDIO_FIXUP(SDIO_VENDOR_ID_QCA9377, SDIO_DEVICE_ID_QCA9377,
 		add_quirk, MMC_QUIRK_QCA9377_SETTINGS),
+
+	SDIO_FIXUP(SDIO_VENDOR_ID_QCA9379, SDIO_DEVICE_ID_QCA9379,
+		add_quirk, MMC_QUIRK_QCA9379_SETTINGS),
 	END_FIXUP
 };
 

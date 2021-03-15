@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -29,9 +29,6 @@
 #include <linux/power_supply.h>
 #include <linux/cpumask.h>
 #include <linux/msm_thermal.h>
-#ifdef CONFIG_LGE_PM
-#include <soc/qcom/lge/board_lge.h>
-#endif
 
 #define CREATE_TRACE_POINTS
 #define _BCL_SW_TRACE
@@ -57,10 +54,6 @@
 		if (_ret) \
 			goto _exit; \
 	} while (0)
-
-#ifdef CONFIG_LGE_PM
-static DEFINE_MUTEX(update_cpu_lock);
-#endif
 
 /*
  * Battery Current Limit Enable or Not
@@ -210,6 +203,7 @@ static uint32_t bcl_hotplug_request, bcl_hotplug_mask, bcl_soc_hotplug_mask;
 static uint32_t bcl_frequency_mask;
 static struct work_struct bcl_hotplug_work;
 static DEFINE_MUTEX(bcl_hotplug_mutex);
+static DEFINE_MUTEX(bcl_cpufreq_mutex);
 static bool bcl_hotplug_enabled;
 static uint32_t battery_soc_val = 100;
 static uint32_t soc_low_threshold;
@@ -259,6 +253,7 @@ static void update_cpu_freq(void)
 	union device_request cpufreq_req;
 
 	trace_bcl_sw_mitigation_event("Start Frequency Mitigate");
+	mutex_lock(&bcl_cpufreq_mutex);
 	cpufreq_req.freq.max_freq = UINT_MAX;
 	cpufreq_req.freq.min_freq = CPUFREQ_MIN_NO_MITIGATION;
 
@@ -283,6 +278,7 @@ static void update_cpu_freq(void)
 			pr_err("Error updating freq for CPU%d. ret:%d\n",
 				cpu, ret);
 	}
+	mutex_unlock(&bcl_cpufreq_mutex);
 	trace_bcl_sw_mitigation_event("End Frequency Mitigation");
 }
 
@@ -301,9 +297,6 @@ static void power_supply_callback(struct power_supply *psy)
 	if (!bms_psy)
 		bms_psy = power_supply_get_by_name("bms");
 	if (bms_psy) {
-#ifdef CONFIG_LGE_PM
-		mutex_lock(&update_cpu_lock);
-#endif
 		battery_percentage = bms_psy->get_property(bms_psy,
 				POWER_SUPPLY_PROP_CAPACITY, &ret);
 		battery_percentage = ret.intval;
@@ -313,15 +306,8 @@ static void power_supply_callback(struct power_supply *psy)
 		prev_soc_state = bcl_soc_state;
 		bcl_soc_state = (battery_soc_val <= soc_low_threshold) ?
 					BCL_LOW_THRESHOLD : BCL_HIGH_THRESHOLD;
-#ifndef CONFIG_LGE_PM
 		if (bcl_soc_state == prev_soc_state)
 			return;
-#else
-		if (bcl_soc_state == prev_soc_state) {
-			mutex_unlock(&update_cpu_lock);
-			return;
-		}
-#endif
 		trace_bcl_sw_mitigation_event(
 			(bcl_soc_state == BCL_LOW_THRESHOLD)
 			? "trigger SoC mitigation"
@@ -329,9 +315,6 @@ static void power_supply_callback(struct power_supply *psy)
 		if (bcl_hotplug_enabled)
 			queue_work(gbcl->bcl_hotplug_wq, &bcl_hotplug_work);
 		update_cpu_freq();
-#ifdef CONFIG_LGE_PM
-		mutex_unlock(&update_cpu_lock);
-#endif
 	}
 }
 
@@ -448,30 +431,18 @@ static void bcl_iavail_work(struct work_struct *work)
 
 static void bcl_ibat_notify(enum bcl_threshold_state thresh_type)
 {
-#ifdef CONFIG_LGE_PM
-	mutex_lock(&update_cpu_lock);
-#endif
 	bcl_ibat_state = thresh_type;
 	if (bcl_hotplug_enabled)
 		queue_work(gbcl->bcl_hotplug_wq, &bcl_hotplug_work);
 	update_cpu_freq();
-#ifdef CONFIG_LGE_PM
-	mutex_unlock(&update_cpu_lock);
-#endif
 }
 
 static void bcl_vph_notify(enum bcl_threshold_state thresh_type)
 {
-#ifdef CONFIG_LGE_PM
-	mutex_lock(&update_cpu_lock);
-#endif
 	bcl_vph_state = thresh_type;
 	if (bcl_hotplug_enabled)
 		queue_work(gbcl->bcl_hotplug_wq, &bcl_hotplug_work);
 	update_cpu_freq();
-#ifdef CONFIG_LGE_PM
-	mutex_unlock(&update_cpu_lock);
-#endif
 }
 
 int bcl_voltage_notify(bool is_high_thresh)
@@ -1705,22 +1676,10 @@ static int bcl_probe(struct platform_device *pdev)
 
 	/* For BCL */
 	/* Init default BCL params */
-#ifdef CONFIG_LGE_PM
-	if (lge_get_boot_mode() == LGE_BOOT_MODE_CHARGERLOGO) {
-		bcl_mode = BCL_DEVICE_DISABLED;
-		pr_info("Chargerlogo BCL Disable\n");
-	} else {
-		if (of_property_read_bool(pdev->dev.of_node, "qcom,bcl-enable"))
-			bcl_mode = BCL_DEVICE_ENABLED;
-		else
-			bcl_mode = BCL_DEVICE_DISABLED;
-	}
-#else
 	if (of_property_read_bool(pdev->dev.of_node, "qcom,bcl-enable"))
 		bcl_mode = BCL_DEVICE_ENABLED;
 	else
 		bcl_mode = BCL_DEVICE_DISABLED;
-#endif
 	bcl->bcl_mode = BCL_DEVICE_DISABLED;
 	bcl->dev = &pdev->dev;
 	bcl->bcl_monitor_type = BCL_IAVAIL_MONITOR_TYPE;

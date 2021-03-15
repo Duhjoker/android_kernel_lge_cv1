@@ -26,28 +26,6 @@
 #include "mmc_ops.h"
 #include "sd_ops.h"
 
-#if LGE_MMC_WP
-#include <linux/jiffies.h>
-#include <linux/kernel.h>
-
-#define MAX_WP_PARTITION_NUM    12
-#define PROPERTY_VALUE_MAX      92
-#define MMC_SECTOR_SIZE         512
-
-/* If the device is not responding */
-#define MMC_CORE_TIMEOUT_MS	(10 * 60 * 1000) /* 10 minute timeout */
-
-typedef struct {
-	unsigned long long start_blk;
-	unsigned long long end_blk;
-} mmc_write_protected_area;
-
-mmc_write_protected_area mmc_wp_area[MAX_WP_PARTITION_NUM] = {{0,0}, };
-
-static void mmc_get_wp_area(void);
-static int32_t mmc_set_power_on_wp_user(struct mmc_card *card);
-#endif
-
 static const unsigned int tran_exp[] = {
 	10000,		100000,		1000000,	10000000,
 	0,		0,		0,		0
@@ -166,9 +144,6 @@ static int mmc_decode_csd(struct mmc_card *card)
 {
 	struct mmc_csd *csd = &card->csd;
 	unsigned int e, m, a, b;
-#if LGE_MMC_WP
-	unsigned int c;
-#endif
 	u32 *resp = card->raw_csd;
 
 	/*
@@ -213,12 +188,6 @@ static int mmc_decode_csd(struct mmc_card *card)
 		csd->erase_size = (a + 1) * (b + 1);
 		csd->erase_size <<= csd->write_blkbits - 9;
 	}
-
-#if LGE_MMC_WP
-	/* Write Protect Group Size in sectors */
-	c = UNSTUFF_BITS(resp, 32, 5);
-	csd->write_protect_size = (a + 1) * (b + 1) * (c + 1);
-#endif
 
 	return 0;
 }
@@ -465,9 +434,6 @@ static int mmc_read_ext_csd(struct mmc_card *card, u8 *ext_csd)
 	 * are authorized, see JEDEC JESD84-B50 section B.8.
 	 */
 	card->ext_csd.rev = ext_csd[EXT_CSD_REV];
-
-	/* fixup device after ext_csd revision field is updated */
-	mmc_fixup_device(card, mmc_fixups);
 
 	card->ext_csd.raw_sectors[0] = ext_csd[EXT_CSD_SEC_CNT + 0];
 	card->ext_csd.raw_sectors[1] = ext_csd[EXT_CSD_SEC_CNT + 1];
@@ -738,6 +704,14 @@ static int mmc_read_ext_csd(struct mmc_card *card, u8 *ext_csd)
 		card->ext_csd.cache_flush_policy = 0;
 	}
 
+	/* eMMC v5 or later */
+	if (card->ext_csd.rev >= 7) {
+		card->ext_csd.pre_eol_info = ext_csd[EXT_CSD_PRE_EOL_INFO];
+		card->ext_csd.device_life_time_est_typ_a =
+			ext_csd[EXT_CSD_DEVICE_LIFE_TIME_EST_TYP_A];
+		card->ext_csd.device_life_time_est_typ_b =
+			ext_csd[EXT_CSD_DEVICE_LIFE_TIME_EST_TYP_B];
+	}
 out:
 	return err;
 }
@@ -759,12 +733,6 @@ static int mmc_compare_ext_csds(struct mmc_card *card, unsigned bus_width)
 	err = mmc_get_ext_csd(card, &bw_ext_csd);
 
 	if (err || bw_ext_csd == NULL) {
-		#ifdef CONFIG_MACH_LGE
-		/* LGE_CHANGE, 2015-12-14, LGE-MSM8937-BSP-memory@lge.com
-		* Adding Print, Requested by QMC-CASE-01158823
-		*/
-		pr_err("%s: %s: 0x%x, 0x%x\n", mmc_hostname(card->host), __func__, err, bw_ext_csd ? *bw_ext_csd : 0x0);
-		#endif
 		err = -EINVAL;
 		goto out;
 	}
@@ -823,18 +791,8 @@ static int mmc_compare_ext_csds(struct mmc_card *card, unsigned bus_width)
 		(card->ext_csd.raw_pwr_cl_ddr_200_360 ==
 			bw_ext_csd[EXT_CSD_PWR_CL_DDR_200_360]));
 
-	#ifdef CONFIG_MACH_LGE
-	/* LGE_CHANGE, 2015-12-14, LGE-MSM8937-BSP-memory@lge.com
-	* Adding Print, Requested by QMC-CASE-01158823
-	*/
-	if (err) {
-		pr_err("%s: %s: fail during compare, err = 0x%x\n", mmc_hostname(card->host), __func__, err);
-		err = -EINVAL;
-	}
-	#else
 	if (err)
 		err = -EINVAL;
-	#endif
 
 out:
 	mmc_free_ext_csd(bw_ext_csd);
@@ -854,6 +812,11 @@ MMC_DEV_ATTR(manfid, "0x%06x\n", card->cid.manfid);
 MMC_DEV_ATTR(name, "%s\n", card->cid.prod_name);
 MMC_DEV_ATTR(oemid, "0x%04x\n", card->cid.oemid);
 MMC_DEV_ATTR(prv, "0x%x\n", card->cid.prv);
+MMC_DEV_ATTR(rev, "0x%x\n", card->ext_csd.rev);
+MMC_DEV_ATTR(pre_eol_info, "%02x\n", card->ext_csd.pre_eol_info);
+MMC_DEV_ATTR(life_time, "0x%02x 0x%02x\n",
+	card->ext_csd.device_life_time_est_typ_a,
+	card->ext_csd.device_life_time_est_typ_b);
 MMC_DEV_ATTR(serial, "0x%08x\n", card->cid.serial);
 MMC_DEV_ATTR(enhanced_area_offset, "%llu\n",
 		card->ext_csd.enhanced_area_offset);
@@ -875,6 +838,9 @@ static struct attribute *mmc_std_attrs[] = {
 	&dev_attr_name.attr,
 	&dev_attr_oemid.attr,
 	&dev_attr_prv.attr,
+	&dev_attr_rev.attr,
+	&dev_attr_pre_eol_info.attr,
+	&dev_attr_life_time.attr,
 	&dev_attr_serial.attr,
 	&dev_attr_enhanced_area_offset.attr,
 	&dev_attr_enhanced_area_size.attr,
@@ -943,15 +909,8 @@ static int __mmc_select_powerclass(struct mmc_card *card,
 				ext_csd->raw_pwr_cl_200_360;
 		break;
 	default:
-		#ifdef CONFIG_MACH_LGE
-		/* LGE_CHANGE, 2015-12-14, LGE-MSM8937-BSP-memory@lge.com
-		* Adding Print, Requested by QMC-CASE-01158823
-		*/
-		pr_err("%s: %s: Voltage range not supported for power class, host->ios.vdd = 0x%x\n", mmc_hostname(host), __func__, host->ios.vdd);
-		#else
 		pr_warn("%s: Voltage range not supported for power class\n",
 			mmc_hostname(host));
-        #endif
 		return -EINVAL;
 	}
 
@@ -1436,7 +1395,6 @@ EXPORT_SYMBOL(tuning_blk_pattern_8bit);
 static int mmc_hs200_tuning(struct mmc_card *card)
 {
 	struct mmc_host *host = card->host;
-	int err = 0;
 
 	/*
 	 * Timing should be adjusted to the HS400 target
@@ -1446,18 +1404,7 @@ static int mmc_hs200_tuning(struct mmc_card *card)
 	    host->ios.bus_width == MMC_BUS_WIDTH_8)
 		mmc_set_timing(host, MMC_TIMING_MMC_HS400);
 
-	if (host->ops->execute_tuning) {
-		mmc_host_clk_hold(host);
-		err = host->ops->execute_tuning(host,
-				MMC_SEND_TUNING_BLOCK_HS200);
-		mmc_host_clk_release(host);
-
-		if (err)
-			pr_warn("%s: tuning execution failed\n",
-				mmc_hostname(host));
-	}
-
-	return err;
+	return mmc_execute_tuning(card);
 }
 
 static int mmc_select_cmdq(struct mmc_card *card)
@@ -1758,17 +1705,10 @@ reinit:
 
 	if (oldcard) {
 		if (memcmp(cid, oldcard->raw_cid, sizeof(cid)) != 0) {
-			/* LGE uses mmc_init_card() function in ffu sequence.
-			 * If device does not use hynix eMMC, CID memcmp error should occur.
-			 * If device uses hynix eMMC, CID(PRV) value is different to oldcard PRV value.
-			 * It is just exception case for hynix eMMC because Hynix eMMC firmware version is linked to CID(PRV) value.
-			 */
-			if(oldcard->cid.manfid != 0x90 || ((oldcard->raw_cid[2] & 0x00ff0000) == (cid[2] & 0x00ff0000))) {
-				err = -ENOENT;
-				pr_err("%s: %s: CID memcmp failed %d\n",
-						mmc_hostname(host), __func__, err);
-				goto err;
-			}
+			err = -ENOENT;
+			pr_err("%s: %s: CID memcmp failed %d\n",
+					mmc_hostname(host), __func__, err);
+			goto err;
 		}
 
 		card = oldcard;
@@ -1823,7 +1763,6 @@ reinit:
 					mmc_hostname(host), __func__, err);
 			goto free_card;
 		}
-
 		err = mmc_decode_cid(card);
 		if (err) {
 			pr_err("%s: %s: mmc_decode_cid() fails %d\n",
@@ -2018,9 +1957,11 @@ reinit:
 		if (err) {
 			pr_warn("%s: Enabling HPI failed\n",
 				mmc_hostname(card->host));
+			card->ext_csd.hpi_en = 0;
 			err = 0;
-		} else
+		} else {
 			card->ext_csd.hpi_en = 1;
+		}
 	}
 
 	/*
@@ -2155,11 +2096,6 @@ reinit:
 		 */
 		(void)mmc_set_auto_bkops(card, true);
 	}
-
-#if LGE_MMC_WP
-	mmc_get_wp_area();
-	mmc_set_power_on_wp_user(card);
-#endif
 
 	if (card->ext_csd.cmdq_support && (card->host->caps2 &
 					   MMC_CAP2_CMD_QUEUE)) {
@@ -2440,7 +2376,7 @@ static int mmc_test_awake_ext_csd(struct mmc_host *host)
 
 static int _mmc_suspend(struct mmc_host *host, bool is_suspend)
 {
-	int err = 0;
+	int err = 0, ret;
 
 	BUG_ON(!host);
 	BUG_ON(!host->card);
@@ -2449,7 +2385,9 @@ static int _mmc_suspend(struct mmc_host *host, bool is_suspend)
 	if (err) {
 		pr_err("%s: %s: fail to suspend clock scaling (%d)\n",
 			mmc_hostname(host), __func__, err);
-		goto out;
+		if (host->card->cmdq_init)
+			wake_up(&host->cmdq_ctx.wait);
+		return err;
 	}
 
 	mmc_claim_host(host);
@@ -2473,12 +2411,12 @@ static int _mmc_suspend(struct mmc_host *host, bool is_suspend)
 	if (mmc_card_doing_bkops(host->card)) {
 		err = mmc_stop_bkops(host->card);
 		if (err)
-			goto out;
+			goto out_err;
 	}
 
 	err = mmc_flush_cache(host->card);
 	if (err)
-		goto out;
+		goto out_err;
 
 	if (mmc_can_sleepawake(host)) {
 		/*
@@ -2495,16 +2433,38 @@ static int _mmc_suspend(struct mmc_host *host, bool is_suspend)
 		err = mmc_deselect_cards(host);
 	}
 
-	if (!err) {
-		mmc_power_off(host);
-		mmc_card_set_suspended(host->card);
+	if (err)
+		goto out_err;
+	mmc_power_off(host);
+	mmc_card_set_suspended(host->card);
+
+	goto out;
+
+out_err:
+	/*
+	 * In case of err let's put controller back in cmdq mode and unhalt
+	 * the controller.
+	 * We expect cmdq_enable and unhalt won't return any error
+	 * since it is anyway enabling few registers.
+	 */
+	if (host->card->cmdq_init) {
+		mmc_host_clk_hold(host);
+		ret = host->cmdq_ops->enable(host);
+		if (ret)
+			pr_err("%s: %s: enabling CMDQ mode failed (%d)\n",
+				mmc_hostname(host), __func__, ret);
+		mmc_host_clk_release(host);
+		mmc_cmdq_halt(host, false);
 	}
+
 out:
 	/* Kick CMDQ thread to process any requests came in while suspending */
 	if (host->card->cmdq_init)
 		wake_up(&host->cmdq_ctx.wait);
 
 	mmc_release_host(host);
+	if (err)
+		mmc_resume_clk_scaling(host);
 	return err;
 }
 
@@ -2526,19 +2486,9 @@ static int mmc_partial_init(struct mmc_host *host)
 	if (mmc_card_hs400(card)) {
 		if (card->ext_csd.strobe_support && host->ops->enhanced_strobe)
 			err = host->ops->enhanced_strobe(host);
-		else {
-			pr_debug("%s: %s: enhanced strobe is not supported, fall back to tuning\n", mmc_hostname(host), __func__);
-			if(host->ops->execute_tuning) {
-				err = host->ops->execute_tuning(host, MMC_SEND_TUNING_BLOCK_HS200);
-				if (err)
-					pr_warn("%s: %s: tuning execution failed (%d), command timeout may happen.\n",
-							mmc_hostname(host), __func__, err);
-			}
-			else {
-				pr_err("%s: %s: HS400 but enhanced strobe is disabled and no tuning is available, command timeout may happen.\n",
-						mmc_hostname(host), __func__);
-			}
-		}
+		else if (host->ops->execute_tuning)
+			err = host->ops->execute_tuning(host,
+				MMC_SEND_TUNING_BLOCK_HS200);
 	} else if (mmc_card_hs200(card) && host->ops->execute_tuning) {
 		err = host->ops->execute_tuning(host,
 			MMC_SEND_TUNING_BLOCK_HS200);
@@ -2832,6 +2782,22 @@ static int mmc_power_restore(struct mmc_host *host)
 	return ret;
 }
 
+static int mmc_shutdown(struct mmc_host *host)
+{
+	struct mmc_card *card = host->card;
+
+	/*
+	 * Exit clock scaling so that it doesn't kick in after
+	 * power off notification is sent
+	 */
+	if (host->caps2 & MMC_CAP2_CLK_SCALE)
+		mmc_exit_clk_scaling(card->host);
+	/* send power off notification */
+	if (mmc_card_mmc(card))
+		mmc_send_pon(card);
+	return 0;
+}
+
 static const struct mmc_bus_ops mmc_ops = {
 	.remove = mmc_remove,
 	.detect = mmc_detect,
@@ -2842,6 +2808,7 @@ static const struct mmc_bus_ops mmc_ops = {
 	.power_restore = mmc_power_restore,
 	.alive = mmc_alive,
 	.change_bus_speed = mmc_change_bus_speed,
+	.shutdown = mmc_shutdown,
 };
 
 /*
@@ -2920,154 +2887,3 @@ err:
 
 	return err;
 }
-
-#if LGE_MMC_WP
-#define MAX_CMD_LEN 50
-static int mmc_set_wp(struct mmc_card *card, u32 wp_grp)
-{
-	struct mmc_command cmd = {0};
-	int err;
-	unsigned long timeout;
-	u32 status;
-
-	pr_info("%s: set write protection - wp_grp = %u\n", __func__, wp_grp);
-
-	cmd.opcode = MMC_SET_WRITE_PROT;
-	cmd.arg = wp_grp;
-	cmd.flags = MMC_RSP_R1B;
-	err = mmc_wait_for_cmd(card->host, &cmd, 0);
-	if(err) {
-		return 1;
-	}
-	if(cmd.resp[0] & R1_OUT_OF_RANGE) {
-		pr_err("%s: Address for CMD28 is out of range\n", __func__);
-		return 1;
-	}
-	/* check card status */
-	timeout = jiffies + msecs_to_jiffies(MMC_CORE_TIMEOUT_MS);
-	do {
-		if(mmc_send_status(card, &status)) {
-			pr_err("%s: Failed to get card status after applying write protect\n", __func__);
-			return 1;
-		}
-		if(time_after(jiffies, timeout)) {
-			pr_err("%s: Card stuck after sending write protection command\n", __func__);
-			return 1;
-		}
-	} while(!(status & R1_READY_FOR_DATA) || R1_CURRENT_STATE(status) == R1_STATE_PRG);
-	pr_info("%s: done - write protection\n", __func__);
-	return 0;
-}
-
-static void mmc_get_wp_area(void)
-{
-	int i = 0;
-	char wp_addr_key[MAX_CMD_LEN] = {0,};
-	char wp_addr_string[MAX_CMD_LEN] = {0,};
-	char *tmp = NULL;
-	int idx = 0;
-	u64 start_blk = 0ULL, end_blk = 0ULL;
-
-	if(mmc_wp_area[0].end_blk!=0) {
-		pr_info("%s: already set wp_area\n", __func__);
-		return;
-	}
-
-	for(i = 0; i < MAX_WP_PARTITION_NUM; ++i) {
-		snprintf(wp_addr_key, ARRAY_SIZE(wp_addr_key), "androidboot.wp_addr_%d", i+1);
-		/* find key */
-		tmp = strnstr(saved_command_line, wp_addr_key, strlen(saved_command_line));
-		if(tmp) {
-			/* copy cmd string */
-			strncpy(wp_addr_string, tmp, strchrnul(tmp, ' ')-tmp);
-			if(sscanf(wp_addr_string, "androidboot.wp_addr_%d=%llu,%llu", &idx, &start_blk, &end_blk)==3) {
-				mmc_wp_area[i].start_blk = start_blk;
-				mmc_wp_area[i].end_blk = end_blk;
-				pr_info("%s:wp_addr_%d=%llu,%llu\n",
-						__func__, i+1, mmc_wp_area[i].start_blk, mmc_wp_area[i].end_blk);
-			} else {
-				pr_err("format matching is failed : cmd : %s\n", wp_addr_string);
-			}
-			memset(wp_addr_string, 0, MAX_CMD_LEN);
-		} else {
-			pr_info("%s: can not find the key value from boot cmd - %s\n", __func__, wp_addr_key);
-			break;
-		}
-	}
-}
-
-static int32_t mmc_set_power_on_wp_user(struct mmc_card *card)
-{
-	int err;
-	int i, j;
-	unsigned int wp_grp_size;
-	u8 *ext_csd;
-	u32 num_wp_grps;
-	u64 len;
-
-	if(!mmc_wp_area[0].end_blk) {
-		pr_info("%s: no need to set up POWP\n", __func__);
-		return 0;
-	}
-
-	/*  1. check if ext_csd[171]:0 is 0 or 1 */
-	/*      Bit[0] : US_PWR_WP_EN is set to 0 after power on or HW reset. */
-	/*      If the issue occurs, Bit[0] would be set to 0. */
-	err = mmc_get_ext_csd(card, &ext_csd);
-	if (err || !ext_csd) {
-		pr_err("%s: mmc_get_ext_csd failed (%d)\n", __func__, err);
-		return err;
-	}
-
-	/*  2. disable PERM WP(mmc_switch) */
-	err = mmc_switch(card, EXT_CSD_CMD_SET_NORMAL,
-			EXT_CSD_USER_WP,
-			EXT_CSD_US_PERM_WP_DIS,
-			card->ext_csd.generic_cmd6_time);
-	if(err) {
-		pr_err("%s: Failed to disable permanent WP(%d)\n",__func__, err);
-		return err;
-	}
-
-	/* read ext_csd again and check the status */
-	err = mmc_get_ext_csd(card, &ext_csd);
-	if (err || !ext_csd) {
-		pr_err("%s: mmc_get_ext_csd failed (%d)\n", __func__, err);
-		return err;
-	}
-
-	if((ext_csd[EXT_CSD_USER_WP] & EXT_CSD_US_PWR_WP_DIS) ||
-			(ext_csd[EXT_CSD_USER_WP] & EXT_CSD_US_PERM_WP_EN)) {
-		pr_err("%s: Power On Write Protection is disabled, cannot be set\n",__func__);
-		return err;
-	}
-
-	/*  3. set POWP */
-	err = mmc_switch(card, EXT_CSD_CMD_SET_NORMAL,
-			EXT_CSD_USER_WP,
-			EXT_CSD_US_PWR_WP_EN | EXT_CSD_US_PERM_WP_DIS,
-			card->ext_csd.generic_cmd6_time);
-	if(err) {
-		pr_err("%s: Failed to set power on WP for user(%d)\n",__func__, err);
-		return err;
-	}
-
-	/*  4. loop with mmc_wp_area, send CMD28 to set the POWP. */
-	wp_grp_size = card->csd.write_protect_size;
-	pr_debug("%s: wp_grp_size = %u\n", __func__, wp_grp_size);
-	for(i = 0; i < ARRAY_SIZE(mmc_wp_area); ++i) {
-		if(!mmc_wp_area[i].end_blk) {
-			break;
-		}
-		len = mmc_wp_area[i].end_blk - mmc_wp_area[i].start_blk;
-		num_wp_grps = DIV_ROUND_UP_ULL(len, wp_grp_size);
-		for(j = 0; j < num_wp_grps; ++j) {
-			err = mmc_set_wp(card, (mmc_wp_area[i].start_blk + j*wp_grp_size));
-			if(err) {
-				return 1;
-			}
-		}
-	}
-	return 0;
-}
-#endif

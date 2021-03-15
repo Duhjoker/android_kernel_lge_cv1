@@ -20,9 +20,7 @@
 #include <linux/mmc/card.h>
 #include <linux/mmc/mmc.h>
 #include <linux/mmc/sd.h>
-#ifdef CONFIG_MACH_LGE
-#include <linux/mmc/slot-gpio.h>
-#endif
+
 #include "core.h"
 #include "bus.h"
 #include "mmc_ops.h"
@@ -272,29 +270,6 @@ static int mmc_read_ssr(struct mmc_card *card)
 				card->ssr.erase_timeout = (et * 1000) / es;
 				card->ssr.erase_offset = eo * 1000;
 			}
-			#ifdef CONFIG_MACH_LGE
-			/* LGE_CHANGE
-			 * Get SPEED_CLASS of SD-card.
-			 * 0:Class0, 1:Class2, 2:Class4, 3:Class6, 4:Class10
-			 * 2015/12/14, LGE-MSM8937-BSP-memory@lge.com
-			 */
-			{
-			   unsigned int speed_class_ssr = 0;
-			   speed_class_ssr = UNSTUFF_BITS(ssr, 440 - 384, 8);
-			   if(speed_class_ssr < 5)
-			   {
-			     printk(KERN_INFO "[LGE][MMC][%-18s( )] mmc_hostname:%s, %u ==> SPEED_CLASS %s%s%s%s%s\n", __func__,
-				mmc_hostname(card->host), speed_class_ssr,
-				((speed_class_ssr == 4) ? "10" : ""),
-				((speed_class_ssr == 3) ? "6" : ""),
-				((speed_class_ssr == 2) ? "4" : ""),
-				((speed_class_ssr == 1) ? "2" : ""),
-				((speed_class_ssr == 0) ? "0" : ""));
-			   }
-			   else
-			   printk(KERN_INFO "[LGE][MMC][%-18s( )] mmc_hostname:%s, Unknown SPEED_CLASS\n", __func__, mmc_hostname(card->host));
-			}
-			#endif
 		} else {
 			pr_warn("%s: SD Status: Invalid Allocation Unit size\n",
 				mmc_hostname(card->host));
@@ -360,6 +335,7 @@ static int mmc_read_switch(struct mmc_card *card)
 		card->sw_caps.sd3_bus_mode = status[13];
 		/* Driver Strengths supported by the card */
 		card->sw_caps.sd3_drv_type = status[9];
+		card->sw_caps.sd3_curr_limit = status[7] | status[6] << 8;
 	}
 
 out:
@@ -617,14 +593,25 @@ static int sd_set_current_limit(struct mmc_card *card, u8 *status)
 	 * when we set current limit to 200ma, the card will draw 200ma, and
 	 * when we set current limit to 400/600/800ma, the card will draw its
 	 * maximum 300ma from the host.
+	 *
+	 * The above is incorrect: if we try to set a current limit that is
+	 * not supported by the card, the card can rightfully error out the
+	 * attempt, and remain at the default current limit.  This results
+	 * in a 300mA card being limited to 200mA even though the host
+	 * supports 800mA. Failures seen with SanDisk 8GB UHS cards with
+	 * an iMX6 host. --rmk
 	 */
-	if (max_current >= 800)
+	if (max_current >= 800 &&
+	    card->sw_caps.sd3_curr_limit & SD_MAX_CURRENT_800)
 		current_limit = SD_SET_CURRENT_LIMIT_800;
-	else if (max_current >= 600)
+	else if (max_current >= 600 &&
+		 card->sw_caps.sd3_curr_limit & SD_MAX_CURRENT_600)
 		current_limit = SD_SET_CURRENT_LIMIT_600;
-	else if (max_current >= 400)
+	else if (max_current >= 400 &&
+		 card->sw_caps.sd3_curr_limit & SD_MAX_CURRENT_400)
 		current_limit = SD_SET_CURRENT_LIMIT_400;
-	else if (max_current >= 200)
+	else if (max_current >= 200 &&
+		 card->sw_caps.sd3_curr_limit & SD_MAX_CURRENT_200)
 		current_limit = SD_SET_CURRENT_LIMIT_200;
 
 	if (current_limit != SD_SET_CURRENT_NO_CHANGE) {
@@ -755,15 +742,10 @@ static int mmc_sd_init_uhs_card(struct mmc_card *card)
 	 * SPI mode doesn't define CMD19 and tuning is only valid for SDR50 and
 	 * SDR104 mode SD-cards. Note that tuning is mandatory for SDR104.
 	 */
-	if (!mmc_host_is_spi(card->host) && card->host->ops->execute_tuning &&
-			(card->sd_bus_speed == UHS_SDR50_BUS_SPEED ||
-			 card->sd_bus_speed == UHS_SDR104_BUS_SPEED)) {
-		mmc_host_clk_hold(card->host);
-		err = card->host->ops->execute_tuning(card->host,
-						      MMC_SEND_TUNING_BLOCK);
-		mmc_host_clk_release(card->host);
-	}
-
+	if (!mmc_host_is_spi(card->host) &&
+	    (card->sd_bus_speed == UHS_SDR50_BUS_SPEED ||
+	     card->sd_bus_speed == UHS_SDR104_BUS_SPEED))
+		err = mmc_execute_tuning(card);
 out:
 	kfree(status);
 
@@ -1030,16 +1012,6 @@ static int mmc_sd_init_card(struct mmc_host *host, u32 ocr,
 	BUG_ON(!host);
 	WARN_ON(!host->claimed);
 
-	#ifdef CONFIG_MACH_LGE
-	/* LGE_CHANGE, 2015-12-14, LGE-MSM8937-BSP-memory@lge.com
-	 * When uSD is not inserted, return proper error-value.
-	 */
-	if (!mmc_gpio_get_cd(host)) {
-		printk(KERN_INFO "[LGE][MMC][%-18s( )] sd-no-exist. skip next\n", __func__);
-		err = -ENOMEDIUM;
-		return err;
-	}
-	#endif
 	err = mmc_sd_get_cid(host, ocr, cid, &rocr);
 	if (err)
 		return err;
@@ -1184,13 +1156,25 @@ static void mmc_sd_detect(struct mmc_host *host)
 	BUG_ON(!host);
 	BUG_ON(!host->card);
 
-	mmc_get_card(host->card);
+	/*
+	 * Try to acquire claim host. If failed to get the lock in 2 sec,
+	 * just return; This is to ensure that when this call is invoked
+	 * due to pm_suspend, not to block suspend for longer duration.
+	 */
+	pm_runtime_get_sync(&host->card->dev);
+	if (!mmc_try_claim_host(host, 2000)) {
+		pm_runtime_mark_last_busy(&host->card->dev);
+		pm_runtime_put_autosuspend(&host->card->dev);
+		return;
+	}
+
+	mmc_power_up(host, host->ocr_avail);
 
 	/*
 	 * Just check if our card has been removed.
 	 */
 #ifdef CONFIG_MMC_PARANOID_SD_INIT
-	while (retries) {
+	while(retries) {
 		err = mmc_send_status(host->card, NULL);
 		if (err) {
 			retries--;
@@ -1200,27 +1184,9 @@ static void mmc_sd_detect(struct mmc_host *host)
 		break;
 	}
 	if (!retries) {
-#ifdef CONFIG_MACH_LGE
-		printk(KERN_ERR "%s(%s): Unable to re-detect card (%d)\n",
-				__func__, mmc_hostname(host), err);
-		mmc_power_off(host);
-		usleep_range(5000, 5500);
-		mmc_power_up(host,host->card->ocr);
-		mmc_select_voltage(host, host->card->ocr);
-		err = mmc_sd_init_card(host, host->card->ocr, host->card);
-		if (err) {
-			printk(KERN_ERR "%s: Re-init card in mmc_sd_detect() rc = %d (retries = %d)\n",
-				 mmc_hostname(host), err, retries);
-			err = _mmc_detect_card_removed(host);
-		} else {
-			printk(KERN_ERR "%s(%s): Re-init card success in mmc_sd_detect()\n",
-				__func__,mmc_hostname(host));
-		}
-#else
 		printk(KERN_ERR "%s(%s): Unable to re-detect card (%d)\n",
 		       __func__, mmc_hostname(host), err);
 		err = _mmc_detect_card_removed(host);
-#endif
 	}
 #else
 	err = _mmc_detect_card_removed(host);
@@ -1282,7 +1248,10 @@ static int mmc_sd_suspend(struct mmc_host *host)
 	if (!err) {
 		pm_runtime_disable(&host->card->dev);
 		pm_runtime_set_suspended(&host->card->dev);
-	}
+	/* if suspend fails, force mmc_detect_change during resume */
+	} else if (mmc_bus_manual_resume(host))
+		host->ignore_bus_resume_flags = true;
+
 	MMC_TRACE(host, "%s: Exit err: %d\n", __func__, err);
 
 	return err;
@@ -1313,15 +1282,6 @@ static int _mmc_sd_resume(struct mmc_host *host)
 	while (retries) {
 		err = mmc_sd_init_card(host, host->card->ocr, host->card);
 
-		#ifdef CONFIG_MACH_LGE
-		       /* LGE_CHANGE, 2015-12-14, LGE-MSM8937-BSP-memory@lge.com
-			* Skip below When ENOMEDIUM
-			*/
-			if (err == -ENOMEDIUM) {
-				printk(KERN_INFO "[LGE][MMC][%-18s( )] error:ENOMEDIUM\n", __func__);
-				break;
-			}
-		#endif
 		if (err) {
 			printk(KERN_ERR "%s: Re-init card rc = %d (retries = %d)\n",
 			       mmc_hostname(host), err, retries);
@@ -1337,21 +1297,13 @@ static int _mmc_sd_resume(struct mmc_host *host)
 #else
 	err = mmc_sd_init_card(host, host->card->ocr, host->card);
 #endif
-#ifdef CONFIG_MACH_LGE
-	mmc_card_clr_suspended(host->card);
 	if (err) {
 		pr_err("%s: %s: mmc_sd_init_card_failed (%d)\n",
 				mmc_hostname(host), __func__, err);
-		goto out;
-	}
-#else
-	if (err) {
-		pr_err("%s: %s: mmc_sd_init_card_failed (%d)\n",
-				mmc_hostname(host), __func__, err);
+		mmc_power_off(host);
 		goto out;
 	}
 	mmc_card_clr_suspended(host->card);
-#endif
 
 	err = mmc_resume_clk_scaling(host);
 	if (err) {
@@ -1471,29 +1423,11 @@ int mmc_attach_sd(struct mmc_host *host)
 #ifdef CONFIG_MMC_PARANOID_SD_INIT
 	int retries;
 #endif
-#ifdef CONFIG_MACH_LGE
-	int i = 0;
-#endif
 
 	BUG_ON(!host);
 	WARN_ON(!host->claimed);
 
-#ifdef CONFIG_MACH_LGE
-	for(i = 0; i < 3; i++) {
-		err = mmc_send_app_op_cond(host, 0, &ocr);
-		printk(KERN_ERR "[LGE][%s][%s] mmc_send_app_op_cond : %d\n", __func__, mmc_hostname(host), err);
-		if (err && !(host->caps & MMC_CAP_NONREMOVABLE)) {
-			mmc_power_cycle(host, host->ocr_avail);
-			mmc_go_idle(host);
-			mmc_send_if_cond(host, host->ocr_avail);
-			printk(KERN_ERR "[LGE][%s][%s] after mmc_power_cycle %d\n", __func__, mmc_hostname(host), i);
-		} else {
-			break;
-		}
-	}
-#else
 	err = mmc_send_app_op_cond(host, 0, &ocr);
-#endif
 	if (err)
 		return err;
 
@@ -1529,18 +1463,6 @@ int mmc_attach_sd(struct mmc_host *host)
 	retries = 5;
 	while (retries) {
 		err = mmc_sd_init_card(host, rocr, NULL);
-
-		#ifdef CONFIG_MACH_LGE
-		/* LGE_CHANGE, 2015-12-14, LGE-MSM8937-BSP-memory@lge.com
-		* Skip below When ENOMEDIUM
-		*/
-		if (err == -ENOMEDIUM) {
-			printk(KERN_INFO "[LGE][MMC][%-18s( )] error:ENOMEDIUM\n", __func__);
-			retries=0;
-			break;
-		}
-		#endif
-
 		if (err) {
 			retries--;
 			mmc_power_off(host);
