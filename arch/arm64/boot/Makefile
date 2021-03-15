@@ -14,11 +14,7 @@
 # Based on the ia64 boot/Makefile.
 #
 
-ifeq ($(CONFIG_MACH_LGE),y)
-include $(srctree)/arch/arm64/boot/dts/lge/Makefile
-else
 include $(srctree)/arch/arm64/boot/dts/qcom/Makefile
-endif
 
 targets := Image Image.gz
 
@@ -37,6 +33,13 @@ $(obj)/Image.gz: $(obj)/Image FORCE
 	$(call if_changed,gzip)
 
 $(obj)/Image.gz-dtb: $(obj)/Image.gz $(DTB_OBJS) FORCE
+	$(call if_changed,cat)
+
+$(obj)/Image-dtb-hdr: $(obj)/Image FORCE
+	echo -n 'UNCOMPRESSED_IMG' > $@ && \
+	$(call size_append, $(filter-out FORCE,$^)) >> $@
+
+$(obj)/Image-dtb: $(obj)/Image-dtb-hdr $(obj)/Image $(DTB_OBJS) FORCE
 	$(call if_changed,cat)
 
 install: $(obj)/Image

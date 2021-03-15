@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2016, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2015-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -25,6 +25,23 @@
 		bootargs = "sched_enable_hmp=1";
 	};
 
+	firmware: firmware {
+		android {
+			compatible = "android,firmware";
+			fstab {
+				compatible = "android,fstab";
+				vendor {
+					compatible = "android,vendor";
+					dev = "/dev/block/platform/soc/7824900.sdhci/by-name/vendor";
+					type = "ext4";
+					mnt_flags = "ro,barrier=1,discard";
+					fsmgr_flags = "wait,verify";
+					status = "ok";
+				};
+			};
+		};
+	};
+
 	reserved-memory {
 		#address-cells = <2>;
 		#size-cells = <2>;
@@ -38,20 +55,20 @@
 
 		modem_mem: modem_region@0 {
 			compatible = "removed-dma-pool";
-			no-map-fixup;
-			reg = <0x0 0x86800000 0x0 0x5200000>;
+			no-map;
+			reg = <0x0 0x86800000 0x0 0x5000000>;
 		};
 
 		adsp_fw_mem: adsp_fw_region@0 {
 			compatible = "removed-dma-pool";
 			no-map;
-			reg = <0x0 0x8ba00000 0x0 0x1100000>;
+			reg = <0x0 0x8b800000 0x0 0x1100000>;
 		};
 
 		wcnss_fw_mem: wcnss_fw_region@0 {
 			compatible = "removed-dma-pool";
 			no-map;
-			reg = <0x0 0x8cb00000 0x0 0x700000>;
+			reg = <0x0 0x8c900000 0x0 0x700000>;
 		};
 
 
@@ -60,7 +77,7 @@
 			reusable;
 			alloc-ranges = <0x0 0x80000000 0x0 0x10000000>;
 			alignment = <0 0x400000>;
-			size = <0 0x1000000>;
+			size = <0 0x0800000>;
 		};
 
 		secure_mem: secure_region@0 {
@@ -92,7 +109,6 @@
 
 	aliases {
 		/* smdtty devices */
-		smd0 = &smdtty_ds;
 		smd1 = &smdtty_apps_fm;
 		smd2 = &smdtty_apps_riva_bt_acl;
 		smd3 = &smdtty_apps_riva_bt_cmd;
@@ -106,7 +122,6 @@
 		smd36 = &smdtty_loopback;
 		i2c2 = &i2c_2;
 		i2c5 = &i2c_5;
-		i2c8 = &i2c_8;
 		spi3 = &spi_3;
 		sdhc1 = &sdhc_1; /* SDC1 eMMC slot */
 		sdhc2 = &sdhc_2; /* SDC2 for SD card */
@@ -594,30 +609,6 @@
 		dma-names = "tx", "rx";
 	};
 
-	i2c_8: i2c@7af8000 { /* BLSP8 QUP1 */
-		compatible = "qcom,i2c-msm-v2";
-		#address-cells = <1>;
-		#size-cells = <0>;
-		reg-names = "qup_phys_addr";
-		reg = <0x7af8000 0x600>;
-		interrupt-names = "qup_irq";
-		interrupts = <0 302 0>;
-		qcom,clk-freq-out = <400000>;
-		qcom,clk-freq-in  = <19200000>;
-		clock-names = "iface_clk", "core_clk";
-		clocks = <&clock_gcc clk_gcc_blsp2_ahb_clk>,
-			<&clock_gcc clk_gcc_blsp2_qup4_i2c_apps_clk>;
-
-		pinctrl-names = "i2c_active", "i2c_sleep";
-		pinctrl-0 = <&i2c_8_active>;
-		pinctrl-1 = <&i2c_8_sleep>;
-		qcom,noise-rjct-scl = <0>;
-		qcom,noise-rjct-sda = <0>;
-		qcom,master-id = <84>;
-		dmas = <&dma_blsp2 10 64 0x20000020 0x20>,
-			<&dma_blsp2 11 32 0x20000020 0x20>;
-		dma-names = "tx", "rx";
-	};
 	spi_3: spi@78b7000 { /* BLSP1 QUP3 */
 		compatible = "qcom,spi-qup-v2";
 		#address-cells = <1>;
@@ -1107,9 +1098,10 @@
 			 <&clock_gcc clk_wcnss_m_clk>,
 			 <&clock_gcc clk_snoc_wcnss_a_clk>;
 
-
 		clock-names = "xo", "rf_clk", "measure", "wcnss_debug",
 				"snoc_wcnss";
+
+		qcom,snoc-wcnss-clock-freq = <200000000>;
 
 		qcom,has-autodetect-xo;
 		qcom,is-pronto-v3;
@@ -1245,9 +1237,9 @@
 			reg = <0x10 8>;
 		};
 
-		dload_type@18 {
+		dload_type@1c {
 			compatible = "qcom,msm-imem-dload-type";
-			reg = <0x18 4>;
+			reg = <0x1c 4>;
 		};
 
 		restart_reason@65c {
@@ -1378,11 +1370,6 @@
 
 	qcom,smdtty {
 		compatible = "qcom,smdtty";
-
-		smdtty_ds: qcom,smdtty-ds {
-			qcom,smdtty-remote = "modem";
-			qcom,smdtty-port-name = "DS";
-		};
 
 		smdtty_apps_fm: qcom,smdtty-apps-fm {
 			qcom,smdtty-remote = "wcnss";
@@ -1730,8 +1717,6 @@
 		qcom,pm-qos-cpu-groups = <0x0f 0xf0>;
 		qcom,pm-qos-legacy-latency-us = <2 200>, <2 200>;
 
-		qcom,devfreq,freq-table = <50000000 200000000>;
-
 		qcom,msm-bus,name = "sdhc2";
 		qcom,msm-bus,num-cases = <8>;
 		qcom,msm-bus,num-paths = <1>;
@@ -1746,6 +1731,7 @@
 		qcom,bus-bw-vectors-bps = <0 400000 20000000 25000000 50000000
 			100000000 200000000 4294967295>;
 
+		qcom,devfreq,freq-table = <50000000 200000000>;
 		clocks = <&clock_gcc clk_gcc_sdcc2_ahb_clk>,
 			<&clock_gcc clk_gcc_sdcc2_apps_clk>;
 		clock-names = "iface_clk", "core_clk";
@@ -1973,20 +1959,6 @@
 		compatible = "qcom,msm-ssc-sensors";
 	};
 
-	mcd {
-		compatible = "qcom,mcd";
-		qcom,ce-hw-instance = <0>;
-		qcom,ce-device = <0>;
-		interrupts = <0 248 0>;
-		interrupt-names = "mcd_irq";
-		clocks = <&clock_gcc clk_crypto_clk_src>,
-			 <&clock_gcc clk_gcc_crypto_clk>,
-			 <&clock_gcc clk_gcc_crypto_ahb_clk>,
-			 <&clock_gcc clk_gcc_crypto_axi_clk>;
-		clock-names = "core_clk_src", "core_clk",
-				"iface_clk", "bus_clk";
-		qcom,ce-opp-freq = <100000000>;
-	};
 };
 
 #include "msm-pm8937-rpm-regulator.dtsi"
