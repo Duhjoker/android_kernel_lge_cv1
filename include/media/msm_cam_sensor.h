@@ -32,7 +32,6 @@ struct msm_camera_sensor_slave_info32 {
 	char actuator_name[32];
 	char ois_name[32];
 	char flash_name[32];
-	char otp_name[32];
 	enum msm_sensor_camera_id_t camera_id;
 	uint16_t slave_addr;
 	enum i2c_freq_mode_t i2c_freq_mode;
@@ -42,6 +41,7 @@ struct msm_camera_sensor_slave_info32 {
 	uint8_t  is_init_params_valid;
 	struct msm_sensor_init_params sensor_init_params;
 	enum msm_sensor_output_format_t output_format;
+	uint8_t bypass_video_node_creation;
 };
 
 struct msm_camera_csid_lut_params32 {
@@ -276,9 +276,6 @@ struct msm_flash_cfg_data_t32 {
 
 #define VIDIOC_MSM_IR_CUT_CFG32 \
 	_IOWR('V', BASE_VIDIOC_PRIVATE + 15, struct msm_ir_cut_cfg_data_t32)
-
-#define VIDIOC_MSM_OTP_CFG32 \
-	_IOWR('V', BASE_VIDIOC_PRIVATE + 15, struct msm_otp_cfg_data32)
 #endif
 
 #endif

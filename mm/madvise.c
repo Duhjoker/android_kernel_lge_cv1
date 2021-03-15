@@ -61,11 +61,6 @@ static long madvise_behavior(struct vm_area_struct *vma,
 	case MADV_RANDOM:
 		new_flags = (new_flags & ~VM_SEQ_READ) | VM_RAND_READ;
 		break;
-#ifdef CONFIG_MARK_MMAP_HOT_PAGE_ENABLE
-		/* Added by dongwook.seo - HOTPAGE */
-	case MADV_HOTPAGE:
-		new_flags = (new_flags & ~VM_RAND_READ & ~VM_SEQ_READ) | VM_HOTPAGE;
-#endif
 	case MADV_DONTFORK:
 		new_flags |= VM_DONTCOPY;
 		break;
@@ -80,7 +75,7 @@ static long madvise_behavior(struct vm_area_struct *vma,
 		new_flags |= VM_DONTDUMP;
 		break;
 	case MADV_DODUMP:
-		if (new_flags & VM_SPECIAL) {
+		if (!is_vm_hugetlb_page(vma) && new_flags & VM_SPECIAL) {
 			error = -EINVAL;
 			goto out;
 		}
@@ -227,9 +222,9 @@ static long madvise_willneed(struct vm_area_struct *vma,
 {
 	struct file *file = vma->vm_file;
 
+	*prev = vma;
 #ifdef CONFIG_SWAP
 	if (!file || mapping_cap_swap_backed(file->f_mapping)) {
-		*prev = vma;
 		if (!file)
 			force_swapin_readahead(vma, start, end);
 		else
@@ -247,7 +242,6 @@ static long madvise_willneed(struct vm_area_struct *vma,
 		return 0;
 	}
 
-	*prev = vma;
 	start = ((start - vma->vm_start) >> PAGE_SHIFT) + vma->vm_pgoff;
 	if (end > vma->vm_end)
 		end = vma->vm_end;
@@ -416,9 +410,6 @@ madvise_behavior_valid(int behavior)
 #endif
 	case MADV_DONTDUMP:
 	case MADV_DODUMP:
-#ifdef CONFIG_MARK_MMAP_HOT_PAGE_ENABLE
-	case MADV_HOTPAGE:
-#endif
 		return 1;
 
 	default:

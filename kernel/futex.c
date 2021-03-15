@@ -123,16 +123,16 @@
  *   futex_wait(futex, val);
  *
  *   waiters++; (a)
- *   smp_mb(); (A) <-- paired with -.
- *                                  |
- *   lock(hash_bucket(futex));      |
- *                                  |
- *   uval = *futex;                 |
- *                                  |        *futex = newval;
- *                                  |        sys_futex(WAKE, futex);
- *                                  |          futex_wake(futex);
- *                                  |
- *                                  `--------> smp_mb(); (B)
+ *   mb(); (A) <-- paired with -.
+ *                              |
+ *   lock(hash_bucket(futex));  |
+ *                              |
+ *   uval = *futex;             |
+ *                              |        *futex = newval;
+ *                              |        sys_futex(WAKE, futex);
+ *                              |          futex_wake(futex);
+ *                              |
+ *                              `------->  mb(); (B)
  *   if (uval == val)
  *     queue();
  *     unlock(hash_bucket(futex));
@@ -264,7 +264,7 @@ static inline void futex_get_mm(union futex_key *key)
 	/*
 	 * Ensure futex_get_mm() implies a full barrier such that
 	 * get_futex_key() implies a full barrier. This is relied upon
-	 * as smp_mb(); (B), see the ordering comment above.
+	 * as full barrier (B), see the ordering comment above.
 	 */
 	smp_mb__after_atomic();
 }
@@ -337,10 +337,10 @@ static void get_futex_key_refs(union futex_key *key)
 
 	switch (key->both.offset & (FUT_OFF_INODE|FUT_OFF_MMSHARED)) {
 	case FUT_OFF_INODE:
-		ihold(key->shared.inode); /* implies smp_mb(); (B) */
+		ihold(key->shared.inode); /* implies MB (B) */
 		break;
 	case FUT_OFF_MMSHARED:
-		futex_get_mm(key); /* implies smp_mb(); (B) */
+		futex_get_mm(key); /* implies MB (B) */
 		break;
 	default:
 		/*
@@ -348,7 +348,7 @@ static void get_futex_key_refs(union futex_key *key)
 		 * mm, therefore the only purpose of calling get_futex_key_refs
 		 * is because we need the barrier for the lockless waiter check.
 		 */
-		smp_mb(); /* explicit smp_mb(); (B) */
+		smp_mb(); /* explicit MB (B) */
 	}
 }
 
@@ -399,7 +399,7 @@ get_futex_key(u32 __user *uaddr, int fshared, union futex_key *key, int rw)
 {
 	unsigned long address = (unsigned long)uaddr;
 	struct mm_struct *mm = current->mm;
-	struct page *page;
+	struct page *page, *page_head;
 	struct address_space *mapping;
 	int err, ro = 0;
 
@@ -424,7 +424,7 @@ get_futex_key(u32 __user *uaddr, int fshared, union futex_key *key, int rw)
 	if (!fshared) {
 		key->private.mm = mm;
 		key->private.address = address;
-		get_futex_key_refs(key);  /* implies smp_mb(); (B) */
+		get_futex_key_refs(key);  /* implies MB (B) */
 		return 0;
 	}
 
@@ -443,6 +443,42 @@ again:
 	else
 		err = 0;
 
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+	page_head = page;
+	if (unlikely(PageTail(page))) {
+		put_page(page);
+		/* serialize against __split_huge_page_splitting() */
+		local_irq_disable();
+		if (likely(__get_user_pages_fast(address, 1, !ro, &page) == 1)) {
+			page_head = compound_head(page);
+			/*
+			 * page_head is valid pointer but we must pin
+			 * it before taking the PG_lock and/or
+			 * PG_compound_lock. The moment we re-enable
+			 * irqs __split_huge_page_splitting() can
+			 * return and the head page can be freed from
+			 * under us. We can't take the PG_lock and/or
+			 * PG_compound_lock on a page that could be
+			 * freed from under us.
+			 */
+			if (page != page_head) {
+				get_page(page_head);
+				put_page(page);
+			}
+			local_irq_enable();
+		} else {
+			local_irq_enable();
+			goto again;
+		}
+	}
+#else
+	page_head = compound_head(page);
+	if (page != page_head) {
+		get_page(page_head);
+		put_page(page);
+	}
+#endif
+
 	/*
 	 * The treatment of mapping from this point on is critical. The page
 	 * lock protects many things but in this context the page lock
@@ -454,11 +490,11 @@ again:
 	 * From this point on, mapping will be re-verified if necessary and
 	 * page lock will be acquired only if it is unavoidable
 	 */
-	page = compound_head(page);
-	mapping = READ_ONCE(page->mapping);
+
+	mapping = READ_ONCE(page_head->mapping);
 
 	/*
-	 * If page->mapping is NULL, then it cannot be a PageAnon
+	 * If page_head->mapping is NULL, then it cannot be a PageAnon
 	 * page; but it might be the ZERO_PAGE or in the gate area or
 	 * in a special mapping (all cases which we are happy to fail);
 	 * or it may have been a good file page when get_user_pages_fast
@@ -470,7 +506,7 @@ again:
 	 *
 	 * The case we do have to guard against is when memory pressure made
 	 * shmem_writepage move it from filecache to swapcache beneath us:
-	 * an unlikely race, but we do need to retry for page->mapping.
+	 * an unlikely race, but we do need to retry for page_head->mapping.
 	 */
 	if (unlikely(!mapping)) {
 		int shmem_swizzled;
@@ -482,8 +518,8 @@ again:
 		 */
 		lock_page(page);
 		shmem_swizzled = PageSwapCache(page) || page->mapping;
-		unlock_page(page);
-		put_page(page);
+		unlock_page(page_head);
+		put_page(page_head);
 
 		if (shmem_swizzled)
 			goto again;
@@ -501,7 +537,7 @@ again:
 	 * it's a read-only handle, it's expected that futexes attach to
 	 * the object not the particular process.
 	 */
-	if (PageAnon(page)) {
+	if (PageAnon(page_head)) {
 		/*
 		 * A RO anonymous page will never change and thus doesn't make
 		 * sense for futex operations.
@@ -533,9 +569,9 @@ again:
 		 */
 		rcu_read_lock();
 
-		if (READ_ONCE(page->mapping) != mapping) {
+		if (READ_ONCE(page_head->mapping) != mapping) {
 			rcu_read_unlock();
-			put_page(page);
+			put_page(page_head);
 
 			goto again;
 		}
@@ -543,7 +579,7 @@ again:
 		inode = READ_ONCE(mapping->host);
 		if (!inode) {
 			rcu_read_unlock();
-			put_page(page);
+			put_page(page_head);
 
 			goto again;
 		}
@@ -561,7 +597,7 @@ again:
 		 */
 		if (WARN_ON_ONCE(!atomic_inc_not_zero(&inode->i_count))) {
 			rcu_read_unlock();
-			put_page(page);
+			put_page(page_head);
 
 			goto again;
 		}
@@ -582,7 +618,7 @@ again:
 	}
 
 out:
-	put_page(page);
+	put_page(page_head);
 	return err;
 }
 
@@ -1205,10 +1241,20 @@ static int wake_futex_pi(u32 __user *uaddr, u32 uval, struct futex_q *this)
 	 */
 	newval = FUTEX_WAITERS | task_pid_vnr(new_owner);
 
-	if (cmpxchg_futex_value_locked(&curval, uaddr, uval, newval))
+	if (cmpxchg_futex_value_locked(&curval, uaddr, uval, newval)) {
 		ret = -EFAULT;
-	else if (curval != uval)
-		ret = -EINVAL;
+	} else if (curval != uval) {
+		/*
+		 * If a unconditional UNLOCK_PI operation (user space did not
+		 * try the TID->0 transition) raced with a waiter setting the
+		 * FUTEX_WAITERS flag between get_user() and locking the hash
+		 * bucket lock, retry the operation.
+		 */
+		if ((FUTEX_TID_MASK & curval) == uval)
+			ret = -EAGAIN;
+		else
+			ret = -EINVAL;
+	}
 	if (ret) {
 		raw_spin_unlock(&pi_state->pi_mutex.wait_lock);
 		return ret;
@@ -1419,8 +1465,8 @@ void requeue_futex(struct futex_q *q, struct futex_hash_bucket *hb1,
 	if (likely(&hb1->chain != &hb2->chain)) {
 		plist_del(&q->list, &hb1->chain);
 		hb_waiters_dec(hb1);
-		plist_add(&q->list, &hb2->chain);
 		hb_waiters_inc(hb2);
+		plist_add(&q->list, &hb2->chain);
 		q->lock_ptr = &hb2->lock;
 	}
 	get_futex_key_refs(key2);
@@ -1809,7 +1855,7 @@ static inline struct futex_hash_bucket *queue_lock(struct futex_q *q)
 
 	q->lock_ptr = &hb->lock;
 
-	spin_lock(&hb->lock); /* implies smp_mb(); (A) */
+	spin_lock(&hb->lock); /* implies MB (A) */
 	return hb;
 }
 
@@ -2268,7 +2314,7 @@ retry:
 	if (!abs_time)
 		goto out;
 
-	restart = &current_thread_info()->restart_block;
+	restart = &current->restart_block;
 	restart->fn = futex_wait_restart;
 	restart->futex.uaddr = uaddr;
 	restart->futex.val = val;
@@ -2470,6 +2516,15 @@ retry:
 		 */
 		if (ret == -EFAULT)
 			goto pi_faulted;
+		/*
+		 * A unconditional UNLOCK_PI op raced against a waiter
+		 * setting the FUTEX_WAITERS bit. Try again.
+		 */
+		if (ret == -EAGAIN) {
+			spin_unlock(&hb->lock);
+			put_futex_key(&key);
+			goto retry;
+		}
 		goto out_unlock;
 	}
 
@@ -2599,7 +2654,6 @@ static int futex_wait_requeue_pi(u32 __user *uaddr, unsigned int flags,
 {
 	struct hrtimer_sleeper timeout, *to = NULL;
 	struct rt_mutex_waiter rt_waiter;
-	struct rt_mutex *pi_mutex = NULL;
 	struct futex_hash_bucket *hb;
 	union futex_key key2 = FUTEX_KEY_INIT;
 	struct futex_q q = futex_q_init;
@@ -2683,6 +2737,8 @@ static int futex_wait_requeue_pi(u32 __user *uaddr, unsigned int flags,
 		if (q.pi_state && (q.pi_state->owner != current)) {
 			spin_lock(q.lock_ptr);
 			ret = fixup_pi_state_owner(uaddr2, &q, current);
+			if (ret && rt_mutex_owner(&q.pi_state->pi_mutex) == current)
+				rt_mutex_unlock(&q.pi_state->pi_mutex);
 			/*
 			 * Drop the reference to the pi state which
 			 * the requeue_pi() code acquired for us.
@@ -2691,6 +2747,8 @@ static int futex_wait_requeue_pi(u32 __user *uaddr, unsigned int flags,
 			spin_unlock(q.lock_ptr);
 		}
 	} else {
+		struct rt_mutex *pi_mutex;
+
 		/*
 		 * We have been woken up by futex_unlock_pi(), a timeout, or a
 		 * signal.  futex_unlock_pi() will not destroy the lock_ptr nor
@@ -2714,18 +2772,19 @@ static int futex_wait_requeue_pi(u32 __user *uaddr, unsigned int flags,
 		if (res)
 			ret = (res < 0) ? res : 0;
 
+		/*
+		 * If fixup_pi_state_owner() faulted and was unable to handle
+		 * the fault, unlock the rt_mutex and return the fault to
+		 * userspace.
+		 */
+		if (ret && rt_mutex_owner(pi_mutex) == current)
+			rt_mutex_unlock(pi_mutex);
+
 		/* Unqueue and drop the lock. */
 		unqueue_me_pi(&q);
 	}
 
-	/*
-	 * If fixup_pi_state_owner() faulted and was unable to handle the
-	 * fault, unlock the rt_mutex and return the fault to userspace.
-	 */
-	if (ret == -EFAULT) {
-		if (pi_mutex && rt_mutex_owner(pi_mutex) == current)
-			rt_mutex_unlock(pi_mutex);
-	} else if (ret == -EINTR) {
+	if (ret == -EINTR) {
 		/*
 		 * We've already been requeued, but cannot restart by calling
 		 * futex_lock_pi() directly. We could restart this syscall, but
@@ -2837,6 +2896,10 @@ err_unlock:
 int handle_futex_death(u32 __user *uaddr, struct task_struct *curr, int pi)
 {
 	u32 uval, uninitialized_var(nval), mval;
+
+	/* Futex address must be 32bit aligned */
+	if ((((unsigned long)uaddr) % sizeof(*uaddr)) != 0)
+		return -1;
 
 retry:
 	if (get_user(uval, uaddr))

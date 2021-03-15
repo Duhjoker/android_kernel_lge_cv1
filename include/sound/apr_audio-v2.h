@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
 *
 * This program is free software; you can redistribute it and/or modify
 * it under the terms of the GNU General Public License version 2 and
@@ -15,10 +15,6 @@
 #define _APR_AUDIO_V2_H_
 
 #include <linux/qdsp6v2/apr.h>
-
-#ifdef CONFIG_SND_SOC_MAXIM_DSM
-#include <sound/maxim_dsm.h>
-#endif /* CONFIG_SND_SOC_MAXIM_DSM */
 
 /* size of header needed for passing data out of band */
 #define APR_CMD_OB_HDR_SZ  12
@@ -46,6 +42,8 @@ struct param_outband {
 #define ADM_MATRIX_ID_AUDIO_TX              1
 
 #define ADM_MATRIX_ID_COMPRESSED_AUDIO_RX   2
+
+#define ADM_MATRIX_ID_LISTEN_TX             4
 /* Enumeration for an audio Tx matrix ID.*/
 #define ADM_MATRIX_ID_AUDIOX              1
 
@@ -948,6 +946,8 @@ struct adm_cmd_connect_afe_port_v5 {
 #define RT_PROXY_PORT_001_RX	0x2000
 #define RT_PROXY_PORT_001_TX	0x2001
 
+#define AFE_LOOPBACK_TX		0x6001
+
 #define AFE_PORT_INVALID 0xFFFF
 #define SLIMBUS_INVALID AFE_PORT_INVALID
 
@@ -1038,6 +1038,7 @@ struct adm_cmd_connect_afe_port_v5 {
 #define AFE_PORT_ID_TERTIARY_MI2S_TX        0x1005
 #define AFE_PORT_ID_QUATERNARY_MI2S_RX      0x1006
 #define AFE_PORT_ID_QUATERNARY_MI2S_TX      0x1007
+#define MI2S_PORT_LAST AFE_PORT_ID_QUATERNARY_MI2S_TX
 #define AUDIO_PORT_ID_I2S_RX				0x1008
 #define AFE_PORT_ID_DIGITAL_MIC_TX          0x1009
 #define AFE_PORT_ID_PRIMARY_PCM_RX          0x100A
@@ -3298,6 +3299,10 @@ struct asm_alac_cfg {
 	u32 channel_layout_tag;
 };
 
+struct asm_g711_dec_cfg {
+	u32 sample_rate;
+};
+
 struct asm_vorbis_cfg {
 	u32 bit_stream_fmt;
 };
@@ -3384,11 +3389,9 @@ struct asm_softvolume_params {
 
 #define ASM_MEDIA_FMT_MULTI_CHANNEL_PCM_V2 0x00010DA5
 
-#if defined(CONFIG_LGE_AUDIO_EFFECT) || defined(CONFIG_LGE_AUDIO_NORMALIZER) || defined(CONFIG_LGE_AUDIO_MABL)
-#define ASM_STREAM_POSTPROC_TOPO_ID_DEFAULT_LGE 0x10009009
-#define ASM_STREAM_POSTPROC_TOPO_ID_OFFLOAD_LGE 0x10009010
-#endif
 #define ASM_MEDIA_FMT_MULTI_CHANNEL_PCM_V3 0x00010DDC
+
+#define ASM_MEDIA_FMT_MULTI_CHANNEL_PCM_V4 0x0001320C
 
 #define ASM_MEDIA_FMT_EVRCB_FS 0x00010BEF
 
@@ -3492,6 +3495,56 @@ struct asm_multi_channel_pcm_fmt_blk_v3 {
  */
 } __packed;
 
+struct asm_multi_channel_pcm_fmt_blk_v4 {
+	uint16_t                num_channels;
+/*
+ * Number of channels
+ * Supported values: 1 to 8
+ */
+
+	uint16_t                bits_per_sample;
+/*
+ * Number of bits per sample per channel
+ * Supported values: 16, 24, 32
+ */
+
+	uint32_t                sample_rate;
+/*
+ * Number of samples per second
+ * Supported values: 2000 to 48000, 96000,192000 Hz
+ */
+
+	uint16_t                is_signed;
+/* Flag that indicates that PCM samples are signed (1) */
+
+	uint16_t                sample_word_size;
+/*
+ * Size in bits of the word that holds a sample of a channel.
+ * Supported values: 12,24,32
+ */
+
+	uint8_t                 channel_mapping[8];
+/*
+ * Each element, i, in the array describes channel i inside the buffer where
+ * 0 <= i < num_channels. Unused channels are set to 0.
+ */
+	uint16_t                endianness;
+/*
+ * Flag to indicate the endianness of the pcm sample
+ * Supported values: 0 - Little endian (all other formats)
+ *                   1 - Big endian (AIFF)
+ */
+	uint16_t                mode;
+/*
+ * Mode to provide additional info about the pcm input data.
+ * Supported values: 0 - Default QFs (Q15 for 16b, Q23 for packed 24b,
+ *                       Q31 for unpacked 24b or 32b)
+ *                  15 - for 16 bit
+ *                  23 - for 24b packed or 8.24 format
+ *                  31 - for 24b unpacked or 32bit
+ */
+} __packed;
+
 /*
  * Payload of the multichannel PCM configuration parameters in
  * the ASM_MEDIA_FMT_MULTI_CHANNEL_PCM_V3 media format.
@@ -3500,6 +3553,16 @@ struct asm_multi_channel_pcm_fmt_blk_param_v3 {
 	struct apr_hdr hdr;
 	struct asm_data_cmd_media_fmt_update_v2 fmt_blk;
 	struct asm_multi_channel_pcm_fmt_blk_v3 param;
+} __packed;
+
+/*
+ * Payload of the multichannel PCM configuration parameters in
+ * the ASM_MEDIA_FMT_MULTI_CHANNEL_PCM_V4 media format.
+ */
+struct asm_multi_channel_pcm_fmt_blk_param_v4 {
+	struct apr_hdr hdr;
+	struct asm_data_cmd_media_fmt_update_v2 fmt_blk;
+	struct asm_multi_channel_pcm_fmt_blk_v4 param;
 } __packed;
 
 struct asm_stream_cmd_set_encdec_param {
@@ -3537,6 +3600,79 @@ struct asm_dec_ddp_endp_param_v2 {
 	int endp_param_value;
 } __packed;
 
+/*
+ * Payload of the multichannel PCM encoder configuration parameters in
+ * the ASM_MEDIA_FMT_MULTI_CHANNEL_PCM_V4 media format.
+ */
+
+struct asm_multi_channel_pcm_enc_cfg_v4 {
+	struct apr_hdr hdr;
+	struct asm_stream_cmd_set_encdec_param encdec;
+	struct asm_enc_cfg_blk_param_v2 encblk;
+	uint16_t num_channels;
+	/*
+	 * Number of PCM channels.
+	 * @values
+	 * - 0 -- Native mode
+	 * - 1 -- 8 channels
+	 * Native mode indicates that encoding must be performed with the number
+	 * of channels at the input.
+	 */
+	uint16_t  bits_per_sample;
+	/*
+	 * Number of bits per sample per channel.
+	 * @values 16, 24
+	 */
+	uint32_t  sample_rate;
+	/*
+	 * Number of samples per second.
+	 * @values 0, 8000 to 48000 Hz
+	 * A value of 0 indicates the native sampling rate. Encoding is
+	 * performed at the input sampling rate.
+	 */
+	uint16_t  is_signed;
+	/*
+	 * Flag that indicates the PCM samples are signed (1). Currently, only
+	 * signed PCM samples are supported.
+	 */
+	uint16_t    sample_word_size;
+	/*
+	 * The size in bits of the word that holds a sample of a channel.
+	 * @values 16, 24, 32
+	 * 16-bit samples are always placed in 16-bit words:
+	 * sample_word_size = 1.
+	 * 24-bit samples can be placed in 32-bit words or in consecutive
+	 * 24-bit words.
+	 * - If sample_word_size = 32, 24-bit samples are placed in the
+	 * most significant 24 bits of a 32-bit word.
+	 * - If sample_word_size = 24, 24-bit samples are placed in
+	 * 24-bit words. @tablebulletend
+	 */
+	uint8_t   channel_mapping[8];
+	/*
+	 * Channel mapping array expected at the encoder output.
+	 *  Channel[i] mapping describes channel i inside the buffer, where
+	 *  0 @le i < num_channels. All valid used channels must be present at
+	 *  the beginning of the array.
+	 * If Native mode is set for the channels, this field is ignored.
+	 * @values See Section @xref{dox:PcmChannelDefs}
+	 */
+	uint16_t                endianness;
+	/*
+	 * Flag to indicate the endianness of the pcm sample
+	 * Supported values: 0 - Little endian (all other formats)
+	 *                   1 - Big endian (AIFF)
+	 */
+	uint16_t                mode;
+	/*
+	 * Mode to provide additional info about the pcm input data.
+	 * Supported values: 0 - Default QFs (Q15 for 16b, Q23 for packed 24b,
+	 *                       Q31 for unpacked 24b or 32b)
+	 *                  15 - for 16 bit
+	 *                  23 - for 24b packed or 8.24 format
+	 *                  31 - for 24b unpacked or 32bit
+	 */
+} __packed;
 
 /*
  * Payload of the multichannel PCM encoder configuration parameters in
@@ -3663,6 +3799,9 @@ struct asm_multi_channel_pcm_enc_cfg_v2 {
 
 /* Enumeration for the raw AAC format. */
 #define ASM_MEDIA_FMT_AAC_FORMAT_FLAG_RAW    3
+
+/* Enumeration for the AAC LATM format. */
+#define ASM_MEDIA_FMT_AAC_FORMAT_FLAG_LATM   4
 
 #define ASM_MEDIA_FMT_AAC_AOT_LC             2
 #define ASM_MEDIA_FMT_AAC_AOT_SBR            5
@@ -3884,6 +4023,12 @@ struct asm_alac_fmt_blk_v2 {
 	u32 sample_rate;
 	u32 channel_layout_tag;
 
+} __packed;
+
+struct asm_g711_dec_fmt_blk_v2 {
+	struct apr_hdr hdr;
+	struct asm_data_cmd_media_fmt_update_v2 fmtblk;
+	u32 sample_rate;
 } __packed;
 
 struct asm_ape_fmt_blk_v2 {
@@ -4303,15 +4448,15 @@ struct asm_amrwbplus_fmt_blk_v2 {
 
 } __packed;
 
-#define ASM_MEDIA_FMT_AC3			0x00010DEE
-#define ASM_MEDIA_FMT_EAC3			0x00010DEF
+#define ASM_MEDIA_FMT_AC3                    0x00010DEE
+#define ASM_MEDIA_FMT_EAC3                   0x00010DEF
 #define ASM_MEDIA_FMT_DTS                    0x00010D88
 #define ASM_MEDIA_FMT_MP2                    0x00010DE9
 #define ASM_MEDIA_FMT_FLAC                   0x00010C16
 #define ASM_MEDIA_FMT_ALAC                   0x00012F31
 #define ASM_MEDIA_FMT_VORBIS                 0x00010C15
 #define ASM_MEDIA_FMT_APE                    0x00012F32
-
+#define ASM_MEDIA_FMT_APTX                   0x000131FF
 
 /* Media format ID for adaptive transform acoustic coding. This
  * ID is used by the #ASM_STREAM_CMD_OPEN_WRITE_COMPRESSED command
@@ -8320,6 +8465,99 @@ struct asm_dts_eagle_param_get {
 	struct asm_stream_cmd_get_pp_params_v2 param;
 } __packed;
 
+/* Opcode to set BT address and license for aptx decoder */
+#define APTX_DECODER_BT_ADDRESS 0x00013201
+#define APTX_CLASSIC_DEC_LICENSE_ID 0x00013202
+
+struct aptx_dec_bt_addr_cfg {
+	uint32_t lap;
+	uint32_t uap;
+	uint32_t nap;
+} __packed;
+
+struct aptx_dec_bt_dev_addr {
+	struct apr_hdr hdr;
+	struct asm_stream_cmd_set_encdec_param encdec;
+	struct aptx_dec_bt_addr_cfg bt_addr_cfg;
+} __packed;
+
+struct asm_aptx_dec_fmt_blk_v2 {
+	struct apr_hdr hdr;
+	struct asm_data_cmd_media_fmt_update_v2 fmtblk;
+	u32     sample_rate;
+/* Number of samples per second.
+ * Supported values: 44100 and 48000 Hz
+ */
+} __packed;
+
+/* Q6Core Specific */
+#define AVCS_CMD_GET_FWK_VERSION                (0x0001292C)
+#define AVCS_CMDRSP_GET_FWK_VERSION             (0x0001292D)
+
+#define AVCS_SERVICE_ID_ALL                     (0xFFFFFFFF)
+#define AVCS_SERVICE_ID_AFE                     (0x4)
+
+struct avcs_get_fwk_version {
+	/*
+	 * Indicates the major version of the AVS build.
+	 * This value is incremented on chipset family boundaries.
+	 */
+	uint32_t build_major_version;
+
+	/*
+	 * Minor version of the AVS build.
+	 * This value represents the mainline to which the AVS build belongs.
+	 */
+	uint32_t build_minor_version;
+
+	/* Indicates the AVS branch version to which the image belongs. */
+	uint32_t build_branch_version;
+
+	/* Indicates the AVS sub-branch or customer product line information. */
+	uint32_t build_subbranch_version;
+
+	/* Number of supported AVS services in the current build. */
+	uint32_t num_services;
+};
+
+struct avs_svc_api_info {
+	/*
+	 * APRV2 service IDs for the individual static services.
+	 *
+	 *	 @values
+	 *	 - APRV2_IDS_SERVICE_ID_ADSP_CORE_V
+	 *	 - APRV2_IDS_SERVICE_ID_ADSP_AFE_V
+	 *	 - APRV2_IDS_SERVICE_ID_ADSP_ASM_V
+	 *	 - APRV2_IDS_SERVICE_ID_ADSP_ADM_V
+	 *	 - APRV2_IDS_SERVICE_ID_ADSP_MVM_V
+	 *	 - APRV2_IDS_SERVICE_ID_ADSP_CVS_V
+	 *	 - APRV2_IDS_SERVICE_ID_ADSP_CVP_V
+	 *	 - APRV2_IDS_SERVICE_ID_ADSP_LSM_V
+	 */
+	uint32_t service_id;
+
+	/*
+	 * Indicates the API version of the service.
+	 *
+	 * Each new API update that warrants a change on the HLOS side triggers
+	 * an increment in the version.
+	 */
+	uint32_t api_version;
+
+	/*
+	 * Indicates the API increments on a sub-branch (not on the mainline).
+	 *
+	 * API branch version numbers can increment independently on different
+	 * sub-branches.
+	 */
+	uint32_t api_branch_version;
+};
+
+struct avcs_fwk_ver_info {
+	struct avcs_get_fwk_version avcs_build;
+	struct avs_svc_api_info services[0];
+};
+
 /* LSM Specific */
 #define VW_FEAT_DIM					(39)
 
@@ -8347,6 +8585,7 @@ struct asm_dts_eagle_param_get {
 #define LSM_SESSION_EVENT_DETECTION_STATUS_V2		(0x00012B01)
 #define LSM_DATA_EVENT_READ_DONE			(0x00012B02)
 #define LSM_DATA_EVENT_STATUS				(0x00012B03)
+#define LSM_SESSION_EVENT_DETECTION_STATUS_V3		(0x00012B04)
 
 #define LSM_MODULE_ID_VOICE_WAKEUP			(0x00012C00)
 #define LSM_PARAM_ID_ENDPOINT_DETECT_THRESHOLD		(0x00012C01)
@@ -8359,6 +8598,12 @@ struct asm_dts_eagle_param_get {
 #define LSM_PARAM_ID_LAB_ENABLE				(0x00012C09)
 #define LSM_PARAM_ID_LAB_CONFIG				(0x00012C0A)
 #define LSM_MODULE_ID_FRAMEWORK				(0x00012C0E)
+#define LSM_PARAM_ID_SWMAD_CFG				(0x00012C18)
+#define LSM_PARAM_ID_SWMAD_MODEL			(0x00012C19)
+#define LSM_PARAM_ID_SWMAD_ENABLE			(0x00012C1A)
+#define LSM_PARAM_ID_POLLING_ENABLE			(0x00012C1B)
+#define LSM_PARAM_ID_MEDIA_FMT				(0x00012C1E)
+#define LSM_PARAM_ID_FWK_MODE_CONFIG			(0x00012C27)
 
 /* HW MAD specific */
 #define AFE_MODULE_HW_MAD				(0x00010230)
@@ -8684,7 +8929,7 @@ struct afe_clk_set {
 	 * for enable and disable clock.
 	 *	"clk_freq_in_hz", "clk_attri", and "clk_root"
 	 *	are ignored in disable clock case.
-	 *	@values?
+	 *	@values 
 	 *	- 0 -- Disabled
 	 *	- 1 -- Enabled  @tablebulletend
 	 */
@@ -9448,6 +9693,7 @@ enum {
 	LEGACY_PCM = 0,
 	COMPRESSED_PASSTHROUGH,
 	COMPRESSED_PASSTHROUGH_CONVERT,
+	LISTEN,
 };
 
 #define AUDPROC_MODULE_ID_COMPRESSED_MUTE                0x00010770
@@ -9520,185 +9766,25 @@ struct adm_param_fluence_sourcetracking_t {
 
 #define AUDPROC_PARAM_ID_AUDIOSPHERE_OPERATING_INPUT_MEDIA_INFO  0x0001091E
 
-#ifdef CONFIG_SND_SOC_MAXIM_DSM
-struct afe_dsm_filter_set_params_t {
-    uint32_t dcResistance;
-    uint32_t coilTemp;
-    uint32_t qualityfactor;
-    uint32_t resonanceFreq;
-    uint32_t excursionMeasure;
-    uint32_t rdcroomtemp;
-    uint32_t releasetime;
-    uint32_t coilthermallimit;
-    uint32_t excursionlimit;
-    uint32_t dsmenabled;
-    uint32_t staticgain;
-    uint32_t lfxgain;
-    uint32_t pilotgain;
-    uint32_t flagToWrite;
-    uint32_t featureSetEnable;
-    uint32_t smooFacVoltClip;
-    uint32_t highPassCutOffFactor;
-    uint32_t leadResistance;
-    uint32_t rmsSmooFac;
-    uint32_t clipLimit;
-    uint32_t thermalCoeff;
-    uint32_t qSpk;
-    uint32_t excurLoggingThresh;
-    uint32_t coilTempLoggingThresh;
-    uint32_t resFreq;
-    uint32_t resFreqGuardBand;
-    uint32_t Ambient_Temp;
-    uint32_t STL_attack_time;
-    uint32_t STL_release_time;
-    uint32_t STL_Admittance_a1;
-    uint32_t STL_Admittance_a2;
-    uint32_t STL_Admittance_b0;
-    uint32_t STL_Admittance_b1;
-    uint32_t STL_Admittance_b2;
-    uint32_t Tch1;
-    uint32_t Rth1;
-    uint32_t Tch2;
-    uint32_t Rth2;
-    uint32_t STL_Attenuation_Gain;
-    uint32_t SPT_rampDownFrames;
-    uint32_t SPT_Threshold;
-    uint32_t T_horizon;
-    uint32_t LFX_Admittance_a1;
-    uint32_t LFX_Admittance_a2;
-    uint32_t LFX_Admittance_b0;
-    uint32_t LFX_Admittance_b1;
-    uint32_t LFX_Admittance_b2;
-    uint32_t X_Max;
-    uint32_t SPK_FS;
-    uint32_t Q_GUARD_BAND;
-    uint32_t STImpedModel_a1;
-    uint32_t STImpedModel_a2;
-    uint32_t STImpedModel_b0;
-    uint32_t STImpedModel_b1;
-    uint32_t STImpedModel_b2;
-    uint32_t STImpedModel_Flag;
-    uint32_t Q_Notch;
-    uint32_t Power_Measurement;
-    uint32_t Reserve_1;
-    uint32_t Reserve_2;
-    uint32_t Reserve_3;
-    uint32_t Reserve_4;
+#define AUDPROC_MODULE_ID_VOICE_TX_SECNS   0x10027059
+#define AUDPROC_PARAM_IDX_SEC_PRIMARY_MIC_CH 0x10014444
+
+struct admx_sec_primary_mic_ch {
+	uint16_t version;
+	/*version number*/
+
+	uint16_t reserved;
+
+	uint16_t sec_primary_mic_ch;
+	/*<primary channel number.*/
+
+	uint16_t reserved1;
 } __packed;
 
-union afe_dsm_spkr_prot_config {
-    struct asm_fbsp_mode_rx_cfg mode_rx_cfg;
-    struct asm_spkr_calib_vi_proc_cfg vi_proc_cfg;
-    struct asm_feedback_path_cfg feedback_path_cfg;
-    struct asm_mode_vi_proc_cfg mode_vi_proc_cfg;
-    struct afe_dsm_filter_set_params_t mode_dsm_proc_cfg;
-} __packed;
 
-struct afe_dsm_spkr_prot_config_command {
-    struct apr_hdr hdr;
-    struct afe_port_cmd_set_param_v2 param;
-    struct afe_port_param_data_v2 pdata;
-    union afe_dsm_spkr_prot_config prot_config;
+struct adm_set_sec_primary_ch_params {
+	struct adm_cmd_set_pp_params_v5 params;
+	struct adm_param_data_v5 data;
+	struct admx_sec_primary_mic_ch sec_primary_mic_ch_data;
 } __packed;
-
-struct afe_dsm_filter_get_params_t {
-    uint32_t dcResistance;
-    uint32_t coilTemp;
-    uint32_t qualityfactor;
-    uint32_t resonanceFreq;
-    uint32_t excursionMeasure;
-    uint32_t rdcroomtemp;
-    uint32_t releasetime;
-    uint32_t coilthermallimit;
-    uint32_t excursionlimit;
-    uint32_t dsmenabled;
-    uint32_t staticgain;
-    uint32_t lfxgain;
-    uint32_t pilotgain;
-    uint32_t flagToWrite;
-    uint32_t featureSetEnable;
-    uint32_t smooFacVoltClip;
-    uint32_t highPassCutOffFactor;
-    uint32_t leadResistance;
-    uint32_t rmsSmooFac;
-    uint32_t clipLimit;
-    uint32_t thermalCoeff;
-    uint32_t qSpk;
-    uint32_t excurLoggingThresh;
-    uint32_t coilTempLoggingThresh;
-    uint32_t resFreq;
-    uint32_t resFreqGuardBand;
-    uint32_t Ambient_Temp;
-    uint32_t STL_attack_time;
-    uint32_t STL_release_time;
-    uint32_t STL_Admittance_a1;
-    uint32_t STL_Admittance_a2;
-    uint32_t STL_Admittance_b0;
-    uint32_t STL_Admittance_b1;
-    uint32_t STL_Admittance_b2;
-    uint32_t Tch1;
-    uint32_t Rth1;
-    uint32_t Tch2;
-    uint32_t Rth2;
-    uint32_t STL_Attenuation_Gain;
-    uint32_t SPT_rampDownFrames;
-    uint32_t SPT_Threshold;
-    uint32_t T_horizon;
-    uint32_t LFX_Admittance_a1;
-    uint32_t LFX_Admittance_a2;
-    uint32_t LFX_Admittance_b0;
-    uint32_t LFX_Admittance_b1;
-    uint32_t LFX_Admittance_b2;
-    uint32_t X_Max;
-    uint32_t SPK_FS;
-    uint32_t Q_GUARD_BAND;
-    uint32_t STImpedModel_a1;
-    uint32_t STImpedModel_a2;
-    uint32_t STImpedModel_b0;
-    uint32_t STImpedModel_b1;
-    uint32_t STImpedModel_b2;
-    uint32_t STImpedModel_Flag;
-    uint32_t Q_Notch;
-    uint32_t Power_Measurement;
-    uint32_t Reserve_1;
-    uint32_t Reserve_2;
-    uint32_t Reserve_3;
-    uint32_t Reserve_4;
-} __packed;
-
-struct afe_dsm_spkr_prot_get_vi_calib {
-    struct apr_hdr hdr;
-    struct afe_port_cmd_get_param_v2 get_param;
-    struct afe_port_param_data_v2 pdata;
-    struct afe_dsm_filter_get_params_t res_cfg;
-} __packed;
-
-struct afe_dsm_spkr_prot_calib_get_resp {
-    uint32_t status;
-    struct afe_port_param_data_v2 pdata;
-    struct afe_dsm_filter_get_params_t res_cfg;
-} __packed;
-
-#ifdef USE_DSM_LOG
-struct afe_dsm_filter_get_log_params_t {
-    uint8_t byteLogArray[BEFORE_BUFSIZE];
-    uint32_t intLogArray[BEFORE_BUFSIZE];
-    uint8_t afterProbByteLogArray[AFTER_BUFSIZE];
-    uint32_t afterProbIntLogArray[AFTER_BUFSIZE];
-};
-
-struct afe_dsm_spkr_prot_get_log_data {
-    struct apr_hdr hdr;
-    struct afe_port_cmd_get_param_v2 get_param;
-    struct afe_port_param_data_v2 pdata;
-    struct afe_dsm_filter_get_log_params_t res_log_cfg;
-} __packed;
-
-struct afe_dsm_spkr_prot_response_log_data {
-    uint32_t status;
-    struct afe_port_param_data_v2 pdata;
-    struct afe_dsm_filter_get_log_params_t res_log_cfg;
-} __packed;
-#endif /* USE_DSM_LOG */
-#endif /* CONFIG_SND_SOC_MAXIM_DSM */
 #endif /*_APR_AUDIO_V2_H_ */

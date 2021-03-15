@@ -915,9 +915,6 @@ extern unsigned int sched_init_task_load_pelt;
 extern unsigned int sched_init_task_load_windows;
 extern unsigned int sched_heavy_task;
 extern unsigned int up_down_migrate_scale_factor;
-#ifdef CONFIG_LGE_BMH
-extern unsigned int capacity_scale;
-#endif
 extern unsigned int sysctl_sched_restrict_tasks_spread;
 
 extern void reset_cpu_hmp_stats(int cpu, int reset_cra);
@@ -1030,6 +1027,9 @@ static inline int sched_cpu_high_irqload(int cpu)
 	return sched_irqload(cpu) >= sysctl_sched_cpu_high_irqload;
 }
 
+static inline bool hmp_capable(void) { return false; }
+static inline bool is_min_capacity_cpu(int cpu) { return true; }
+
 #else	/* CONFIG_SCHED_HMP */
 
 struct hmp_sched_stats;
@@ -1083,6 +1083,12 @@ static inline void sched_account_irqtime(int cpu, struct task_struct *curr,
 static inline int sched_cpu_high_irqload(int cpu) { return 0; }
 
 #endif	/* CONFIG_SCHED_HMP */
+
+/* cycle counter based accounting is not available in QHMP. */
+static inline void sched_account_irqstart(int cpu, struct task_struct *curr,
+					  u64 wallclock)
+{
+}
 
 #ifdef CONFIG_SCHED_FREQ_INPUT
 extern void check_for_freq_change(struct rq *rq);

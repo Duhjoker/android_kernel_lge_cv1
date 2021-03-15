@@ -52,7 +52,6 @@
 #define MSM_CAMERA_SUBDEV_IR_CUT       18
 #define MSM_CAMERA_SUBDEV_EXT          19
 
-#define MSM_CAMERA_SUBDEV_OTP          18
 #define MSM_MAX_CAMERA_SENSORS  5
 
 /* The below macro is defined to put an upper limit on maximum
@@ -86,9 +85,7 @@
 #define MSM_CAMERA_MAPPING_CFG  (MSM_CAMERA_EVENT_MIN + 5)
 #define MSM_CAMERA_MAPPING_SES  (MSM_CAMERA_EVENT_MIN + 6)
 #define MSM_CAMERA_MSM_NOTIFY   (MSM_CAMERA_EVENT_MIN + 7)
-/*LGE_CHANGE, CST, added qcamsvr shutdown event*/
-#define MSM_CAMERA_SHUTDOWN     (MSM_CAMERA_EVENT_MIN + 8)
-#define MSM_CAMERA_EVENT_MAX    (MSM_CAMERA_EVENT_MIN + 9)
+#define MSM_CAMERA_EVENT_MAX    (MSM_CAMERA_EVENT_MIN + 8)
 
 /* data.command */
 #define MSM_CAMERA_PRIV_S_CROP			(V4L2_CID_PRIVATE_BASE + 1)
@@ -220,7 +217,7 @@ struct msm_camera_private_ioctl_arg {
 	__u32 size;
 	__u32 result;
 	__u32 reserved;
-	__user __u64 ioctl_ptr;
+	__u64 ioctl_ptr;
 };
 
 #define VIDIOC_MSM_CAMERA_PRIVATE_IOCTL_CMD \

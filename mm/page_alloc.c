@@ -111,6 +111,7 @@ static DEFINE_SPINLOCK(managed_page_count_lock);
 
 unsigned long totalram_pages __read_mostly;
 unsigned long totalreserve_pages __read_mostly;
+unsigned long totalcma_pages __read_mostly;
 /*
  * When calculating the number of globally allowed dirty pages, there
  * is a certain number of per-zone reserves that should not be
@@ -213,9 +214,6 @@ static char * const zone_names[MAX_NR_ZONES] = {
 int min_free_kbytes = 1024;
 int user_min_free_kbytes = -1;
 int min_free_order_shift = 1;
-#ifdef CONFIG_HSWAP
-int wmark_tune_level = 3;
-#endif
 
 /*
  * Extra memory for the system to try freeing. Used to temporarily
@@ -791,9 +789,8 @@ static bool free_pages_prepare(struct page *page, unsigned int order)
 
 	trace_mm_page_free(page, order);
 	kmemcheck_free_shadow(page, order);
-	kasan_free_pages(page, order);
 
-	if (PageMappingFlags(page))
+	if (PageAnon(page))
 		page->mapping = NULL;
 	for (i = 0; i < (1 << order); i++)
 		bad += free_pages_check(page + i);
@@ -857,13 +854,6 @@ bool is_cma_pageblock(struct page *page)
 	return get_pageblock_migratetype(page) == MIGRATE_CMA;
 }
 
-#ifdef CONFIG_MACH_LGE
-/* LGE_UPDATE, 2015/12/24, LGE-MSM8937-BSP-memory@lge.com
-* add the EXPORT_SYMBOL(is_cma_pageblock) because build is failed by tuxera exFAT
-* this code is tuxera guide.
-*/
-EXPORT_SYMBOL(is_cma_pageblock);
-#endif
 /* Free whole pageblock and set its migration type to MIGRATE_CMA. */
 void __init init_cma_reserved_pageblock(struct page *page)
 {
@@ -988,7 +978,6 @@ static int prep_new_page(struct page *page, unsigned int order, gfp_t gfp_flags)
 	kasan_alloc_pages(page, order);
 	arch_alloc_page(page, order);
 	kernel_map_pages(page, 1 << order, 1);
-	kasan_alloc_pages(page, order);
 
 	if (gfp_flags & __GFP_ZERO)
 		prep_zero_page(page, order, gfp_flags);
@@ -1091,13 +1080,13 @@ int move_freepages(struct zone *zone,
 #endif
 
 	for (page = start_page; page <= end_page;) {
-		/* Make sure we are not inadvertently changing nodes */
-		VM_BUG_ON_PAGE(page_to_nid(page) != zone_to_nid(zone), page);
-
 		if (!pfn_valid_within(page_to_pfn(page))) {
 			page++;
 			continue;
 		}
+
+		/* Make sure we are not inadvertently changing nodes */
+		VM_BUG_ON_PAGE(page_to_nid(page) != zone_to_nid(zone), page);
 
 		if (!PageBuddy(page)) {
 			page++;
@@ -1164,6 +1153,9 @@ static void change_pageblock_range(struct page *pageblock_page,
  * as fragmentation caused by those allocations polluting movable pageblocks
  * is worse than movable allocations stealing from unmovable and reclaimable
  * pageblocks.
+ *
+ * If we claim more than half of the pageblock, change pageblock's migratetype
+ * as well.
  */
 static bool can_steal_fallback(unsigned int order, int start_mt)
 {
@@ -2529,6 +2521,10 @@ __alloc_pages_direct_compact(gfp_t gfp_mask, unsigned int order,
 	 * count a compaction stall
 	 */
 	count_vm_event(COMPACTSTALL);
+
+	/* Page migration frees to the PCP lists but we want merging */
+	drain_pages(get_cpu());
+	put_cpu();
 
 	page = get_page_from_freelist(gfp_mask, nodemask,
 			order, zonelist, high_zoneidx,
@@ -5546,15 +5542,18 @@ void __init free_area_init_nodes(unsigned long *max_zone_pfn)
 				sizeof(arch_zone_lowest_possible_pfn));
 	memset(arch_zone_highest_possible_pfn, 0,
 				sizeof(arch_zone_highest_possible_pfn));
-	arch_zone_lowest_possible_pfn[0] = find_min_pfn_with_active_regions();
-	arch_zone_highest_possible_pfn[0] = max_zone_pfn[0];
-	for (i = 1; i < MAX_NR_ZONES; i++) {
+
+	start_pfn = find_min_pfn_with_active_regions();
+
+	for (i = 0; i < MAX_NR_ZONES; i++) {
 		if (i == ZONE_MOVABLE)
 			continue;
-		arch_zone_lowest_possible_pfn[i] =
-			arch_zone_highest_possible_pfn[i-1];
-		arch_zone_highest_possible_pfn[i] =
-			max(max_zone_pfn[i], arch_zone_lowest_possible_pfn[i]);
+
+		end_pfn = max(max_zone_pfn[i], start_pfn);
+		arch_zone_lowest_possible_pfn[i] = start_pfn;
+		arch_zone_highest_possible_pfn[i] = end_pfn;
+
+		start_pfn = end_pfn;
 	}
 	arch_zone_lowest_possible_pfn[ZONE_MOVABLE] = 0;
 	arch_zone_highest_possible_pfn[ZONE_MOVABLE] = 0;
@@ -5673,8 +5672,8 @@ unsigned long free_reserved_area(void *start, void *end, int poison, char *s)
 	}
 
 	if (pages && s)
-		pr_info("Freeing %s memory: %ldK (%p - %p)\n",
-			s, pages << (PAGE_SHIFT - 10), start, end);
+		pr_info("Freeing %s memory: %ldK\n",
+			s, pages << (PAGE_SHIFT - 10));
 
 	return pages;
 }
@@ -5728,7 +5727,7 @@ void __init mem_init_print_info(const char *str)
 
 	printk("Memory: %luK/%luK available "
 	       "(%luK kernel code, %luK rwdata, %luK rodata, "
-	       "%luK init, %luK bss, %luK reserved"
+	       "%luK init, %luK bss, %luK reserved, %luK cma-reserved"
 #ifdef	CONFIG_HIGHMEM
 	       ", %luK highmem"
 #endif
@@ -5736,7 +5735,8 @@ void __init mem_init_print_info(const char *str)
 	       nr_free_pages() << (PAGE_SHIFT-10), physpages << (PAGE_SHIFT-10),
 	       codesize >> 10, datasize >> 10, rosize >> 10,
 	       (init_data_size + init_code_size) >> 10, bss_size >> 10,
-	       (physpages - totalram_pages) << (PAGE_SHIFT-10),
+	       (physpages - totalram_pages - totalcma_pages) << (PAGE_SHIFT-10),
+	       totalcma_pages << (PAGE_SHIFT-10),
 #ifdef	CONFIG_HIGHMEM
 	       totalhigh_pages << (PAGE_SHIFT-10),
 #endif
@@ -5897,6 +5897,7 @@ static void __setup_per_zone_wmarks(void)
 
 	for_each_zone(zone) {
 		u64 min, low;
+
 		spin_lock_irqsave(&zone->lock, flags);
 		min = (u64)pages_min * zone->managed_pages;
 		do_div(min, lowmem_pages);
@@ -5926,28 +5927,11 @@ static void __setup_per_zone_wmarks(void)
 			zone->watermark[WMARK_MIN] = min;
 		}
 
-
-#ifdef CONFIG_HSWAP
-		if (!is_highmem(zone)) {
-			zone->watermark[WMARK_HIGH] = min_wmark_pages(zone) +
-				low + min * wmark_tune_level;
-			zone->watermark[WMARK_LOW] = high_wmark_pages(zone) -
-				(min * 1 / 4);
-#ifdef CONFIG_ZRAM
-			zone->watermark[WMARK_MIN] >>= 1;
-#endif
-		} else {
-			zone->watermark[WMARK_LOW]  = min_wmark_pages(zone) +
-						low + (min >> 2);
-			zone->watermark[WMARK_HIGH] = min_wmark_pages(zone) +
-						low + (min >> 1);
-		}
-#else
 		zone->watermark[WMARK_LOW]  = min_wmark_pages(zone) +
 					low + (min >> 2);
 		zone->watermark[WMARK_HIGH] = min_wmark_pages(zone) +
 					low + (min >> 1);
-#endif
+
 		__mod_zone_page_state(zone, NR_ALLOC_BATCH,
 			high_wmark_pages(zone) - low_wmark_pages(zone) -
 			atomic_long_read(&zone->vm_stat[NR_ALLOC_BATCH]));
@@ -6087,21 +6071,6 @@ int min_free_kbytes_sysctl_handler(struct ctl_table *table, int write,
 	}
 	return 0;
 }
-
-#ifdef CONFIG_HSWAP
-int wmark_tune_level_sysctl_handler(struct ctl_table *table, int write,
-		void __user *buffer, size_t *length, loff_t *ppos)
-{
-	int ret;
-
-	ret = proc_dointvec_minmax(table, write, buffer, length, ppos);
-	if (ret < 0 || !write)
-		return ret;
-
-	setup_per_zone_wmarks();
-	return ret;
-}
-#endif
 
 #ifdef CONFIG_NUMA
 int sysctl_min_unmapped_ratio_sysctl_handler(struct ctl_table *table, int write,
@@ -6669,7 +6638,7 @@ int alloc_contig_range(unsigned long start, unsigned long end,
 
 	/* Make sure the range is really isolated. */
 	if (test_pages_isolated(outer_start, end, false)) {
-		pr_info("%s: [%lx, %lx) PFNs busy\n",
+		pr_info_ratelimited("%s: [%lx, %lx) PFNs busy\n",
 			__func__, outer_start, end);
 		ret = -EBUSY;
 		goto done;

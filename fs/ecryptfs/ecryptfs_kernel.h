@@ -39,9 +39,6 @@
 #include <linux/backing-dev.h>
 #include <linux/ecryptfs.h>
 #include <linux/crypto.h>
-#ifdef CONFIG_SD_ENCRYPTION_MANAGER
-#include "sdcard_encrypt_mgr.h"
-#endif
 
 #define ECRYPTFS_DEFAULT_IV_BYTES 16
 #define ECRYPTFS_DEFAULT_EXTENT_SIZE 4096
@@ -87,11 +84,16 @@ struct ecryptfs_page_crypt_context {
 static inline struct ecryptfs_auth_tok *
 ecryptfs_get_encrypted_key_payload_data(struct key *key)
 {
-	if (key->type == &key_type_encrypted)
-		return (struct ecryptfs_auth_tok *)
-			(&((struct encrypted_key_payload *)key->payload.data)->payload_data);
-	else
+	struct encrypted_key_payload *payload;
+
+	if (key->type != &key_type_encrypted)
 		return NULL;
+
+	payload = key->payload.data;
+	if (!payload)
+		return ERR_PTR(-EKEYREVOKED);
+
+	return (struct ecryptfs_auth_tok *)payload->payload_data;
 }
 
 static inline struct key *ecryptfs_get_encrypted_key(char *sig)
@@ -117,13 +119,17 @@ static inline struct ecryptfs_auth_tok *
 ecryptfs_get_key_payload_data(struct key *key)
 {
 	struct ecryptfs_auth_tok *auth_tok;
+	struct user_key_payload *ukp;
 
 	auth_tok = ecryptfs_get_encrypted_key_payload_data(key);
-	if (!auth_tok)
-		return (struct ecryptfs_auth_tok *)
-			(((struct user_key_payload *)key->payload.data)->data);
-	else
+	if (auth_tok)
 		return auth_tok;
+
+	ukp = key->payload.data;
+	if (!ukp)
+		return ERR_PTR(-EKEYREVOKED);
+
+	return (struct ecryptfs_auth_tok *)ukp->data;
 }
 
 #define ECRYPTFS_MAX_KEYSET_SIZE 1024
@@ -165,9 +171,6 @@ ecryptfs_get_key_payload_data(struct key *key)
 #define ECRYPTFS_FILENAME_MIN_RANDOM_PREPEND_BYTES 16
 #define ECRYPTFS_NON_NULL 0x42 /* A reasonable substitute for NULL */
 #define MD5_DIGEST_SIZE 16
-#ifdef CONFIG_SD_ENCRYPTION_ADVANCED
-#define SHA256_HASH_SIZE 32
-#endif
 #define ECRYPTFS_TAG_70_DIGEST_SIZE MD5_DIGEST_SIZE
 #define ECRYPTFS_TAG_70_MIN_METADATA_SIZE (1 + ECRYPTFS_MIN_PKT_LEN_SIZE \
 					   + ECRYPTFS_SIG_SIZE + 1 + 1)
@@ -355,21 +358,11 @@ struct ecryptfs_mount_crypt_stat {
 	unsigned char global_default_cipher_mode[ECRYPTFS_MAX_CIPHER_NAME_SIZE
 							 + 1];
 };
-#ifdef FEATURE_SDCARD_ENCRYPTION
-struct ecryptfs_mount_sd_crypt_stat {
-#define ECRYPTFS_DECRYPTION_ONLY               0x00000001
-#define ECRYPTFS_MEDIA_EXCEPTION               0x00000002
-	u32 flags;
-};
-#endif
 
 /* superblock private data. */
 struct ecryptfs_sb_info {
 	struct super_block *wsi_sb;
 	struct ecryptfs_mount_crypt_stat mount_crypt_stat;
-#ifdef FEATURE_SDCARD_ENCRYPTION
-	struct ecryptfs_mount_sd_crypt_stat mount_sd_crypt_stat;
-#endif
 	struct backing_dev_info bdi;
 };
 

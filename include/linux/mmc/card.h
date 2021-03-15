@@ -16,7 +16,6 @@
 #include <linux/mod_devicetable.h>
 #include <linux/notifier.h>
 
-#define LGE_MMC_WP  1
 #define MMC_CARD_CMDQ_BLK_SIZE 512
 
 struct mmc_cid {
@@ -41,9 +40,6 @@ struct mmc_csd {
 	unsigned int		r2w_factor;
 	unsigned int		max_dtr;
 	unsigned int		erase_size;		/* In sectors */
-#if LGE_MMC_WP
-	unsigned int        write_protect_size; /* Write Protect Group Size in sectors */
-#endif
 	unsigned int		read_blkbits;
 	unsigned int		write_blkbits;
 	unsigned int		capacity;
@@ -136,6 +132,9 @@ struct mmc_ext_csd {
 	u8			cmdq_support;		/* 308 */
 	u8			barrier_support;	/* 486 */
 	u8			barrier_en;
+	u8			pre_eol_info;		/* 267 */
+	u8			device_life_time_est_typ_a;	/* 268 */
+	u8			device_life_time_est_typ_b;	/* 269 */
 
 	u8			fw_version;		/* 254 */
 	unsigned int            feature_support;
@@ -393,6 +392,8 @@ struct mmc_card {
 
 /* Make sure CMDQ is empty before queuing DCMD */
 #define MMC_QUIRK_CMDQ_EMPTY_BEFORE_DCMD (1 << 17)
+
+#define MMC_QUIRK_QCA9379_SETTINGS (1 << 18)	/* QCA9379 card settings*/
 
 	unsigned int		erase_size;	/* erase size in sectors */
  	unsigned int		erase_shift;	/* if erase unit is power 2 */
@@ -692,6 +693,11 @@ static inline bool mmc_enable_qca6574_settings(const struct mmc_card *c)
 static inline bool mmc_enable_qca9377_settings(const struct mmc_card *c)
 {
 	return c->quirks & MMC_QUIRK_QCA9377_SETTINGS;
+}
+
+static inline bool mmc_enable_qca9379_settings(const struct mmc_card *c)
+{
+	return c->quirks & MMC_QUIRK_QCA9379_SETTINGS;
 }
 
 #define mmc_card_name(c)	((c)->cid.prod_name)

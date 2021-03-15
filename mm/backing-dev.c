@@ -69,10 +69,10 @@ static int bdi_debug_stats_show(struct seq_file *m, void *v)
 	unsigned long background_thresh;
 	unsigned long dirty_thresh;
 	unsigned long bdi_thresh;
-	unsigned long nr_dirty, nr_io, nr_more_io;
+	unsigned long nr_dirty, nr_io, nr_more_io, nr_dirty_time;
 	struct inode *inode;
 
-	nr_dirty = nr_io = nr_more_io = 0;
+	nr_dirty = nr_io = nr_more_io = nr_dirty_time = 0;
 	spin_lock(&wb->list_lock);
 	list_for_each_entry(inode, &wb->b_dirty, i_wb_list)
 		nr_dirty++;
@@ -80,6 +80,9 @@ static int bdi_debug_stats_show(struct seq_file *m, void *v)
 		nr_io++;
 	list_for_each_entry(inode, &wb->b_more_io, i_wb_list)
 		nr_more_io++;
+	list_for_each_entry(inode, &wb->b_dirty_time, i_wb_list)
+		if (inode->i_state & I_DIRTY_TIME)
+			nr_dirty_time++;
 	spin_unlock(&wb->list_lock);
 
 	global_dirty_limits(&background_thresh, &dirty_thresh);
@@ -98,6 +101,7 @@ static int bdi_debug_stats_show(struct seq_file *m, void *v)
 		   "b_dirty:            %10lu\n"
 		   "b_io:               %10lu\n"
 		   "b_more_io:          %10lu\n"
+		   "b_dirty_time:       %10lu\n"
 		   "bdi_list:           %10u\n"
 		   "state:              %10lx\n",
 		   (unsigned long) K(bdi_stat(bdi, BDI_WRITEBACK)),
@@ -111,6 +115,7 @@ static int bdi_debug_stats_show(struct seq_file *m, void *v)
 		   nr_dirty,
 		   nr_io,
 		   nr_more_io,
+		   nr_dirty_time,
 		   !list_empty(&bdi->bdi_list), bdi->state);
 #undef K
 
@@ -234,48 +239,11 @@ static ssize_t stable_pages_required_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(stable_pages_required);
 
-#ifdef CONFIG_CHECK_SYNC_TIME
-/*
- * "check_and_sync" is changed to "bg_sync" during suspend syncing filesystems.
- * Although below codes related with "check_and_sync" have to be deleted together,
- * We can't eliminate this codes because "max_sync_count" variable is using
- * on another performance patch in 8937 n branch. (90559ec731b80801630051f8db5be5a0c651fb0f)
- * When the variable will be not using anymore, we would erase this.
- */
-static ssize_t max_sync_count_for_suspend_store(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t count)
-{
-	struct backing_dev_info *bdi = dev_get_drvdata(dev);
-	unsigned int max_sync_count;
-	ssize_t ret;
-
-	ret = kstrtouint(buf, 10, &max_sync_count);
-	if (ret < 0)
-		return ret;
-
-	ret = bdi_set_max_sync_count(bdi, max_sync_count);
-	if (!ret)
-		ret = count;
-
-	return ret;
-}
-BDI_SHOW(max_sync_count_for_suspend, bdi->max_sync_count)
-#endif
 static struct attribute *bdi_dev_attrs[] = {
 	&dev_attr_read_ahead_kb.attr,
 	&dev_attr_min_ratio.attr,
 	&dev_attr_max_ratio.attr,
 	&dev_attr_stable_pages_required.attr,
-#ifdef CONFIG_CHECK_SYNC_TIME
-	/*
-	 * "check_and_sync" is changed to "bg_sync" during suspend syncing filesystems.
-	 * Although below codes related with "check_and_sync" have to be deleted together,
-	 * We can't eliminate this codes because "max_sync_count" variable is using
-	 * on another performance patch in 8937 n branch. (90559ec731b80801630051f8db5be5a0c651fb0f)
-	 * When the variable will be not using anymore, we would erase this.
-	 */
-	&dev_attr_max_sync_count_for_suspend.attr,
-#endif
 	NULL,
 };
 ATTRIBUTE_GROUPS(bdi_dev);
@@ -455,6 +423,7 @@ static void bdi_wb_init(struct bdi_writeback *wb, struct backing_dev_info *bdi)
 	INIT_LIST_HEAD(&wb->b_dirty);
 	INIT_LIST_HEAD(&wb->b_io);
 	INIT_LIST_HEAD(&wb->b_more_io);
+	INIT_LIST_HEAD(&wb->b_dirty_time);
 	spin_lock_init(&wb->list_lock);
 	INIT_DELAYED_WORK(&wb->dwork, bdi_writeback_workfn);
 }

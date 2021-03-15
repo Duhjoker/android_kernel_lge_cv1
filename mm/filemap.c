@@ -36,7 +36,6 @@
 #include <linux/cleancache.h>
 #include <linux/rmap.h>
 #include "internal.h"
-#include "../fs/sreadahead_prof.h"
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/filemap.h>
@@ -344,18 +343,16 @@ int filemap_fdatawait_range(struct address_space *mapping, loff_t start_byte,
 		goto out;
 
 	pagevec_init(&pvec, 0);
-	while ((index <= end) &&
-			(nr_pages = pagevec_lookup_tag(&pvec, mapping, &index,
-			PAGECACHE_TAG_WRITEBACK,
-			min(end - index, (pgoff_t)PAGEVEC_SIZE-1) + 1)) != 0) {
+	while (index <= end) {
 		unsigned i;
+
+		nr_pages = pagevec_lookup_range_tag(&pvec, mapping, &index,
+				end, PAGECACHE_TAG_WRITEBACK);
+		if (!nr_pages)
+			break;
 
 		for (i = 0; i < nr_pages; i++) {
 			struct page *page = pvec.pages[i];
-
-			/* until radix tree lookup accepts end_index */
-			if (page->index > end)
-				continue;
 
 			wait_on_page_writeback(page);
 			if (TestClearPageError(page))
@@ -471,7 +468,7 @@ int replace_page_cache_page(struct page *old, struct page *new, gfp_t gfp_mask)
 	VM_BUG_ON_PAGE(!PageLocked(new), new);
 	VM_BUG_ON_PAGE(new->mapping, new);
 
-	error = radix_tree_preload(gfp_mask & ~__GFP_HIGHMEM);
+	error = radix_tree_preload(gfp_mask & GFP_RECLAIM_MASK);
 	if (!error) {
 		struct address_space *mapping = old->mapping;
 		void (*freepage)(struct page *);
@@ -564,7 +561,7 @@ static int __add_to_page_cache_locked(struct page *page,
 			return error;
 	}
 
-	error = radix_tree_maybe_preload(gfp_mask & ~__GFP_HIGHMEM);
+	error = radix_tree_maybe_preload(gfp_mask & GFP_RECLAIM_MASK);
 	if (error) {
 		if (!huge)
 			mem_cgroup_cancel_charge(page, memcg);
@@ -631,9 +628,11 @@ int add_to_page_cache_lru(struct page *page, struct address_space *mapping,
 		 * recently, in which case it should be activated like
 		 * any other repeatedly accessed page.
 		 */
-		WARN_ON_ONCE(PageActive(page));
-		if (!(gfp_mask & __GFP_WRITE) && shadow)
-			workingset_refault(page, shadow);
+		if (shadow && workingset_refault(shadow)) {
+			SetPageActive(page);
+			workingset_activation(page);
+		} else
+			ClearPageActive(page);
 		lru_cache_add(page);
 	}
 	return ret;
@@ -1351,9 +1350,10 @@ repeat:
 EXPORT_SYMBOL(find_get_pages_contig);
 
 /**
- * find_get_pages_tag - find and return pages that match @tag
+ * find_get_pages_range_tag - find and return pages in given range matching @tag
  * @mapping:	the address_space to search
  * @index:	the starting page index
+ * @end:	The final page index (inclusive)
  * @tag:	the tag index
  * @nr_pages:	the maximum number of pages
  * @pages:	where the resulting pages are placed
@@ -1361,8 +1361,9 @@ EXPORT_SYMBOL(find_get_pages_contig);
  * Like find_get_pages, except we only return pages which are tagged with
  * @tag.   We update @index to index the next page for the traversal.
  */
-unsigned find_get_pages_tag(struct address_space *mapping, pgoff_t *index,
-			int tag, unsigned int nr_pages, struct page **pages)
+unsigned find_get_pages_range_tag(struct address_space *mapping, pgoff_t *index,
+			pgoff_t end, int tag, unsigned int nr_pages,
+			struct page **pages)
 {
 	struct radix_tree_iter iter;
 	void **slot;
@@ -1376,6 +1377,9 @@ restart:
 	radix_tree_for_each_tagged(slot, &mapping->page_tree,
 				   &iter, *index, tag) {
 		struct page *page;
+
+		if (iter.index > end)
+			break;
 repeat:
 		page = radix_tree_deref_slot(slot);
 		if (unlikely(!page))
@@ -1414,18 +1418,28 @@ repeat:
 		}
 
 		pages[ret] = page;
-		if (++ret == nr_pages)
-			break;
+		if (++ret == nr_pages) {
+			*index = pages[ret - 1]->index + 1;
+			goto out;
+		}
 	}
 
+	/*
+	 * We come here when we got at @end. We take care to not overflow the
+	 * index @index as it confuses some of the callers. This breaks the
+	 * iteration when there is page at index -1 but that is already broken
+	 * anyway.
+	 */
+	if (end == (pgoff_t)-1)
+		*index = (pgoff_t)-1;
+	else
+		*index = end + 1;
+out:
 	rcu_read_unlock();
-
-	if (ret)
-		*index = pages[ret - 1]->index + 1;
 
 	return ret;
 }
-EXPORT_SYMBOL(find_get_pages_tag);
+EXPORT_SYMBOL(find_get_pages_range_tag);
 
 /*
  * CD/DVDs are error prone. When a medium error occurs, the driver may fail
@@ -1811,11 +1825,7 @@ static void do_sync_mmap_readahead(struct vm_area_struct *vma,
 	/*
 	 * mmap read-around
 	 */
-#ifdef CONFIG_READAHEAD_MMAP_SIZE_ENABLE
-	ra_pages = CONFIG_READAHEAD_MMAP_PAGE_CNT;
-#else
 	ra_pages = max_sane_readahead(ra->ra_pages);
-#endif
 	ra->start = max_t(long, 0, offset - ra_pages / 2);
 	ra->size = ra_pages;
 	ra->async_size = ra_pages / 4;
@@ -1868,7 +1878,6 @@ static void do_async_mmap_readahead(struct vm_area_struct *vma,
  *
  * We never return with VM_FAULT_RETRY and a bit from VM_FAULT_ERROR set.
  */
-
 int filemap_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 {
 	int error;
@@ -1890,14 +1899,6 @@ int filemap_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 	 */
 	page = find_get_page(mapping, offset);
 	if (likely(page) && !(vmf->flags & FAULT_FLAG_TRIED)) {
-#ifdef CONFIG_MARK_MMAP_HOT_PAGE_ENABLE
-		if(vma->vm_flags & VM_HOTPAGE) {
-			if(!PageHotpage(page)) {
-				SetPageHotpage(page);
-			}
-			hotpage_accessed(page);
-		}
-#endif
 		/*
 		 * We found the page, so try async readahead before
 		 * waiting for the lock.
@@ -1907,15 +1908,6 @@ int filemap_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 		/* No page in the page cache at all */
 		do_sync_mmap_readahead(vma, ra, file, offset);
 		count_vm_event(PGMAJFAULT);
-		/* LGE_CHANGE_S
-		*
-		* Profile files related to pgmajfault during 1st booting
-		* in order to use the data as readahead args
-		*
-		* matia.kim@lge.com 20130612
-		*/
-		sreadahead_prof(file, 0, 0);
-		/* LGE_CHANGE_E */
 		mem_cgroup_count_vm_event(vma->vm_mm, PGMAJFAULT);
 		ret = VM_FAULT_MAJOR;
 retry_find:
